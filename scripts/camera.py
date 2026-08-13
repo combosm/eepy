@@ -5,6 +5,11 @@ from scipy.spatial import distance
 from flask_socketio import SocketIO
 import time
 from collections import deque  # leetcode finally being useful!!!
+from scripts.benchmark import (
+    BENCHMARK_ENABLED,
+    BENCHMARK_FRAME_COUNT,
+    EepyBenchmark,
+)
 
 socketio = SocketIO()
 ### to do
@@ -72,16 +77,22 @@ drowsy_frame_count = 0  # counter to track the number of frames since is_drowsy 
 def generate_frames():
     global blink_count, yawn_count, drowsy_frame_count
     cap = cv2.VideoCapture(0)
+    benchmark = EepyBenchmark(BENCHMARK_ENABLED, BENCHMARK_FRAME_COUNT)
     fps = cap.get(cv2.CAP_PROP_FPS)
     frame_window = int(fps * 5)  # Number of frames in the last minute
     blink_scores = deque(maxlen=frame_window)
     yawn_scores = deque(maxlen=frame_window)
     
     while True:
+        # End-to-end timing includes blocking capture and JPEG encoding.
+        loop_started_at = benchmark.now()
         success, frame = cap.read()
         if not success:
             break
 
+        # Processing-only timing excludes camera capture and stream-consumer waits.
+        processing_started_at = benchmark.now()
+        non_vision_seconds = 0.0
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)  # convert frame to grayscale
         h, w = frame.shape[:2]
 
@@ -124,6 +135,11 @@ def generate_frames():
                     yawn_scores.append(1)
                 else:
                     yawn_scores.append(0)
+
+                # Start an episode at the first raw eye-closure or yawn signal.
+                benchmark.observe_raw_signal(
+                    ear < 0.3 or mar > 0.6, benchmark.now()
+                )
                     
                 if len(blink_scores) >= frame_window:
                     blink_scores.popleft()
@@ -159,8 +175,12 @@ def generate_frames():
                 # if yawn_score > frame_window * 0.3:  # Adjust threshold as needed
                 #     cv2.putText(frame, "TOO MUCH YAWNING", (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 4)
                 
+                fatigue_just_confirmed = False
                 if drowsiness_score > frame_window * 0.5:  # ADJUST
                     # cv2.putText(frame, "DROWSINESS", (50, 200), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 4)
+                    fatigue_just_confirmed = not data_store["is_drowsy"]
+                    if fatigue_just_confirmed:
+                        benchmark.confirm_fatigue(benchmark.now())
                     data_store["is_drowsy"] = True
                     drowsy_frame_count += 1
                 else:
@@ -173,15 +193,27 @@ def generate_frames():
                 
                 # sending data to frontend
                 data = {"EAR": ear, "MAR": mar, "is_drowsy": data_store["is_drowsy"]}
+                if fatigue_just_confirmed:
+                    # Invocation, rather than Socket.IO delivery, is the local intervention boundary.
+                    benchmark.intervention_invoked(benchmark.now())
+                emit_started_at = benchmark.now()
                 socketio.emit("update_data", data)
+                non_vision_seconds += benchmark.now() - emit_started_at
 
                 # drawing landmarks
                 for (x, y) in landmarks:
                     cv2.circle(frame, (x, y), 1, (0, 255, 0), -1)
 
+        processing_finished_at = benchmark.now()
+
         # converting frame to bytes for streaming
         _, buffer = cv2.imencode('.jpg', frame)
         frame_bytes = buffer.tobytes()
+        loop_finished_at = benchmark.now()
+        benchmark.record_frame(
+            processing_finished_at - processing_started_at - non_vision_seconds,
+            loop_finished_at - loop_started_at,
+        )
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
 
