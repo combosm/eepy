@@ -46,6 +46,16 @@ LEFT_EYE = [36, 37, 38, 39, 40, 41]
 RIGHT_EYE = [42, 43, 44, 45, 46, 47]
 MOUTH = [48, 50, 52, 54, 56, 58]
 
+# Normalization bounds are centered on the existing binary fatigue thresholds.
+EAR_CLOSED_BOUND = 0.2
+EAR_DROWSY_THRESHOLD = 0.3
+EAR_OPEN_BOUND = 0.4
+MAR_RESTING_BOUND = 0.3
+MAR_DROWSY_THRESHOLD = 0.6
+MAR_YAWN_BOUND = 0.9
+EYE_SCORE_WEIGHT = 0.7
+MOUTH_SCORE_WEIGHT = 0.3
+
 # ear_value = 0
 # mar_value = 0
 data_store = {
@@ -69,6 +79,23 @@ def mouth_aspect_ratio(mouth):
     C = distance.euclidean(mouth[0], mouth[3])  # horizontal
     mar = (A + B) / (2.0 * C)
     return round(mar, 3)
+
+
+def clamp(value, lower=0.0, upper=1.0):
+    return max(lower, min(value, upper))
+
+
+def normalize_eye_closure(ear):
+    """Map open-to-closed EAR values onto a clamped [0, 1] score."""
+    score = (EAR_OPEN_BOUND - ear) / (EAR_OPEN_BOUND - EAR_CLOSED_BOUND)
+    return clamp(score)
+
+
+def normalize_mouth_opening(mar):
+    """Map resting-to-yawning MAR values onto a clamped [0, 1] score."""
+    score = (mar - MAR_RESTING_BOUND) / (MAR_YAWN_BOUND - MAR_RESTING_BOUND)
+    return clamp(score)
+
 
 blink_count = 0
 yawn_count = 0
@@ -125,20 +152,16 @@ def generate_frames():
                 mar = round(mar, 3)
                 data_store["MAR"] = mar
 
-                # detecting drowsiness
-                if ear < 0.3:  # threshold
-                    blink_scores.append(1)
-                else:
-                    blink_scores.append(0)
-                    
-                if mar > 0.6:  # threshold
-                    yawn_scores.append(1)
-                else:
-                    yawn_scores.append(0)
+                # Normalize differently scaled EAR/MAR values before aggregation.
+                eye_closure_score = normalize_eye_closure(ear)
+                mouth_open_score = normalize_mouth_opening(mar)
+                blink_scores.append(eye_closure_score)
+                yawn_scores.append(mouth_open_score)
 
                 # Start an episode at the first raw eye-closure or yawn signal.
                 benchmark.observe_raw_signal(
-                    ear < 0.3 or mar > 0.6, benchmark.now()
+                    ear < EAR_DROWSY_THRESHOLD or mar > MAR_DROWSY_THRESHOLD,
+                    benchmark.now(),
                 )
                     
                 if len(blink_scores) >= frame_window:
@@ -148,13 +171,16 @@ def generate_frames():
                     
                 blink_score = sum(blink_scores)
                 yawn_score = sum(yawn_scores)
-                drowsiness_score = blink_score * 0.7 + yawn_score * 0.3
+                drowsiness_score = (
+                    blink_score * EYE_SCORE_WEIGHT
+                    + yawn_score * MOUTH_SCORE_WEIGHT
+                )
                 # print(f'len(blink_scores) {len(blink_scores)}')
                 # print(f'len(yawn_scores) {len(yawn_scores)}')
                 # print(f'Blink Score: {blink_score}')
                 # print(f'Yawn Score: {yawn_score}')
                 
-                if ear < 0.3:  # threshold
+                if ear < EAR_DROWSY_THRESHOLD:
                     blink_count += 1
                     if blink_count > 10:      # ADJUST THIS
                         cv2.putText(frame, "DROWSY! Wake up!", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 4)
@@ -162,7 +188,7 @@ def generate_frames():
                     blink_count = 0
 
                 # detecting yawning
-                if mar > 0.6:  # threshold
+                if mar > MAR_DROWSY_THRESHOLD:
                     yawn_count += 1
                     if yawn_count > 10:  # ADJUST THIS
                         cv2.putText(frame, "Yawning! Take a break!", (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 4)
