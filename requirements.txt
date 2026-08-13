@@ -15,3 +15,6 @@ pyaudio
 python-dotenv
 requests
 duckduckgo_search
+wikipedia
+flask
+flask_socketio
