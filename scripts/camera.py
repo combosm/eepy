@@ -55,6 +55,8 @@ MAR_DROWSY_THRESHOLD = 0.6
 MAR_YAWN_BOUND = 0.9
 EYE_SCORE_WEIGHT = 0.7
 MOUTH_SCORE_WEIGHT = 0.3
+EYE_CLOSURE_GRACE_SECONDS = 0.5
+EYE_CLOSURE_RAMP_SECONDS = 1.0
 
 # ear_value = 0
 # mar_value = 0
@@ -97,6 +99,13 @@ def normalize_mouth_opening(mar):
     return clamp(score)
 
 
+def temporal_eye_contribution(eye_closure_score, closure_duration):
+    """Suppress normal blinks, then ramp sustained eye-closure evidence."""
+    sustained_duration = closure_duration - EYE_CLOSURE_GRACE_SECONDS
+    duration_weight = clamp(sustained_duration / EYE_CLOSURE_RAMP_SECONDS)
+    return eye_closure_score * duration_weight
+
+
 blink_count = 0
 yawn_count = 0
 drowsy_frame_count = 0  # counter to track the number of frames since is_drowsy was set to True
@@ -109,6 +118,7 @@ def generate_frames():
     frame_window = int(fps * 5)  # Number of frames in the last minute
     blink_scores = deque(maxlen=frame_window)
     yawn_scores = deque(maxlen=frame_window)
+    eye_closure_started_at = None
     
     while True:
         # End-to-end timing includes blocking capture and JPEG encoding.
@@ -155,7 +165,19 @@ def generate_frames():
                 # Normalize differently scaled EAR/MAR values before aggregation.
                 eye_closure_score = normalize_eye_closure(ear)
                 mouth_open_score = normalize_mouth_opening(mar)
-                blink_scores.append(eye_closure_score)
+
+                if ear < EAR_DROWSY_THRESHOLD:
+                    if eye_closure_started_at is None:
+                        eye_closure_started_at = time.perf_counter()
+                    closure_duration = time.perf_counter() - eye_closure_started_at
+                    eye_score_contribution = temporal_eye_contribution(
+                        eye_closure_score, closure_duration
+                    )
+                else:
+                    eye_closure_started_at = None
+                    eye_score_contribution = 0.0
+
+                blink_scores.append(eye_score_contribution)
                 yawn_scores.append(mouth_open_score)
 
                 # Start an episode at the first raw eye-closure or yawn signal.
