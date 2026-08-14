@@ -1,12 +1,10 @@
 from flask import Flask, render_template, Response, jsonify
 from scripts.camera import generate_frames, data_store, socketio
-from flask_socketio import SocketIO
 import time
 import threading
-from scripts.ai.ai_agent import main, ai_response  # Import the main function and ai_response from ai_agent
+from scripts.ai.ai_agent import main
 
 app = Flask(__name__)
-#socketio = SocketIO(app, cors_allowed_origins="*")  # Allow cross-origin for testing
 socketio.init_app(app, cors_allowed_origins="*")
 
 data_store = {"EAR": 0, "MAR": 0, "is_drowsy": False, "ai_response": "TEST"}

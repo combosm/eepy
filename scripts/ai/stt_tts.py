@@ -14,20 +14,18 @@ r = sr.Recognizer()
 def record_audio():
     """record audio and convert it to text"""
 
-    # loop indefinitely until the user stops yapping
-    while(1):
-        # connect user mic and listen to audio
-        with sr.Microphone() as source:
-            r.adjust_for_ambient_noise(source, duration=0.2)
-            audio = r.listen(source)
+    # connect user mic and listen to audio
+    with sr.Microphone() as source:
+        r.adjust_for_ambient_noise(source, duration=0.2)
+        audio = r.listen(source)
 
-            # converting user audio to text using google 
-            try:
-                text = r.recognize_google(audio)
-                return text
-            except Exception as e:
-                print("Error: ", e)
-                return None
+        # converting user audio to text using google
+        try:
+            text = r.recognize_google(audio)
+            return text
+        except Exception as e:
+            print("Error: ", e)
+            return None
 
 
 """

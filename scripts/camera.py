@@ -34,13 +34,7 @@ predictor_path = "models/shape_predictor_68_face_landmarks.dat"
 detector = dlib.get_frontal_face_detector()
 predictor = dlib.shape_predictor(predictor_path)
 
-# indices for eye and mouth landmarks
-
-# 1-indexed
-# LEFT_EYE = [37, 38, 39, 40, 41, 42]
-# RIGHT_EYE = [43, 44, 45, 46, 47, 48]
-# MOUTH = [50, 52, 54, 56, 58, 59]
-# 0-indexed
+# indices for eye and mouth landmarks (0-indexed)
 LEFT_EYE = [36, 37, 38, 39, 40, 41]
 RIGHT_EYE = [42, 43, 44, 45, 46, 47]
 MOUTH = [48, 50, 52, 54, 56, 58]
@@ -58,8 +52,6 @@ EYE_CLOSURE_GRACE_SECONDS = 0.5
 EYE_CLOSURE_RAMP_SECONDS = 1.0
 MOUTH_EVIDENCE_WINDOW_SECONDS = 5.0
 
-# ear_value = 0
-# mar_value = 0
 data_store = {
     "EAR": 0,
     "MAR": 0,
@@ -235,5 +227,3 @@ def generate_frames():
         )
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-
-cv2.destroyAllWindows()

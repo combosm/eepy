@@ -6,32 +6,27 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain.agents import create_tool_calling_agent, AgentExecutor
 from scripts.ai.tools import search_tool, wiki_tool
 import os
-import json
 import scripts.ai.stt_tts
 
 load_dotenv()
 
-# Define the response schema using Pydantic BaseModel
+# define the response schema using Pydantic BaseModel
 class ResearchResponse(BaseModel):
     topic: str
     summary: str
 
-# Function to initialise AI Agent
+
 def initialise_agent():
-     # Ensure the API key is set
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise ValueError("OPENAI_API_KEY environment variable is not set.")
 
-    # Initialize the language model
-    llm = ChatOpenAI(
-        model="gpt-4o-mini",
-        api_key=api_key
-    )
-    # Define a parser to convert the AI's output into the Pydantic model
+    # initialise the language model
+    llm = ChatOpenAI(model="gpt-4o-mini", api_key=api_key)
+   
     parser = PydanticOutputParser(pydantic_object=ResearchResponse)
 
-    # Chat Prompt template
+    # chat prompt template
     prompt = ChatPromptTemplate.from_messages(
         [
             ("system", "You are a helpful AI assistant. Keep responses concise.\n{format_instructions}"),
@@ -41,7 +36,7 @@ def initialise_agent():
         ]
     ).partial(format_instructions=parser.get_format_instructions())
 
-    # Define the tools the AI agent can use
+    # define the tools the AI agent can use
     tools = [search_tool, wiki_tool]
 
     # Create the AI agent with the specified LLM, prompt, and tools
@@ -52,27 +47,25 @@ def initialise_agent():
     )
     return agent, tools
 
-# Function to process the AI response
+
 def process_response(raw_response):
     try:
-        # Extract the output string from the raw response
-        output_str = raw_response.get("output")
-        
-        # Parse the output string into the ResearchResponse model and return the summary
+        output_str = raw_response.get("output") 
+        # parse the output string into the ResearchResponse model and return the summary
         return ResearchResponse.parse_raw(output_str).summary
     except Exception as e:
-        # Print the error and raw response for debugging
+
         print(f"Error parsing response: {e}")
         print(f"Raw Response: {raw_response}")
         
-        # Return an error message if parsing fails
+        # return an error message if parsing fails
         return "Sorry, I couldn't process the response."
 
 ai_response = "AI RESPONSE"
 
-# Runs the main AI functionality after activation
+
 def run_ai(agent, tools):
-    global ai_response  # Add this line to modify the global variable
+    global ai_response  
     # Create an executor to run the agent with the tools
     agent_executor = AgentExecutor(agent=agent, tools=tools)
     chat_history = []
@@ -105,7 +98,6 @@ def run_ai(agent, tools):
             scripts.ai.stt_tts.output_audio(ai_response)
 
 def main():
-    # Initialize the agent and tools
     agent, tools = initialise_agent()
 
     # Word for activation
