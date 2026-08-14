@@ -40,11 +40,7 @@ def initialise_agent():
     tools = [search_tool, wiki_tool]
 
     # Create the AI agent with the specified LLM, prompt, and tools
-    agent = create_tool_calling_agent(
-        llm=llm,
-        prompt=prompt,
-        tools=tools
-    )
+    agent = create_tool_calling_agent(llm=llm, prompt=prompt, tools=tools)
     return agent, tools
 
 
