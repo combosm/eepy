@@ -18,7 +18,7 @@ BENCHMARK_FRAME_COUNT = int(os.getenv("EEPY_BENCHMARK_FRAME_COUNT", "500"))
 
 
 def _latency_stats(samples: list[float]) -> dict[str, float] | None:
-    """Return milliseconds using a nearest-rank p95."""
+    """return milliseconds using a nearest-rank p95"""
     if not samples:
         return None
 
@@ -34,9 +34,9 @@ def _latency_stats(samples: list[float]) -> dict[str, float] | None:
 
 
 class EepyBenchmark:
-    """Collect timings in memory and print once after the requested frame count."""
+    """collect timings in memory and print once after the requested frame count"""
 
-    def __init__(self, enabled: bool, frame_count: int):
+    def __init__(self, enabled: bool, frame_count: int) -> None:
         self.enabled = enabled
         self.frame_count = max(1, frame_count)
         self.processing_latencies: list[float] = []
@@ -59,7 +59,7 @@ class EepyBenchmark:
             if self._raw_signal_started_at is None:
                 self._raw_signal_started_at = observed_at
         elif self._confirmed_at is None:
-            # An unconfirmed episode ended; do not reuse its timestamp later.
+            # an unconfirmed episode ended. Do not reuse its timestamp later.
             self._raw_signal_started_at = None
 
     def confirm_fatigue(self, confirmed_at: float) -> None:

@@ -1,0 +1,50 @@
+/* Shared across every page. Page-specific overrides live in that page's own stylesheet,
+   loaded after this one. */
+
+body {
+    margin: 0;
+    background-color: #000000;
+    color: white;
+}
+
+.navbar {
+    background-color: #850B4E;
+    overflow: hidden;
+}
+.navbar a {
+    float: left;
+    display: block;
+    color: #f2f2f2;
+    text-align: center;
+    padding: 14px 16px;
+    text-decoration: none;
+}
+.navbar a:hover {
+    background-color: #ddd;
+    color: black;
+}
+
+.button {
+    background-color: #850B4E;
+    border: none;
+    color: white;
+    text-align: center;
+    text-decoration: none;
+    display: inline-block;
+    font-size: 16px;
+    cursor: pointer;
+    font-family: 'Poppins', sans-serif;
+}
+
+.footer {
+    text-align: center;
+    font-family: 'Poppins', sans-serif;
+    color: #FFF;
+    background: #850B4E;
+}
+
+.eepy-inline {
+    font-family: 'Pixelify Sans', sans-serif;
+    color: #f2f2f2;
+    -webkit-text-stroke: 0.5px #850B4E;
+}

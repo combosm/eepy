@@ -1,0 +1,108 @@
+/* Camera page. Loaded after base.css — only what differs from or adds to it. */
+
+body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-height: 100vh;
+    text-align: center;
+    font-family: Arial, sans-serif;
+}
+
+.navbar {
+    width: 100%;
+}
+
+h1 {
+    font-family: 'Pixelify Sans';
+    color: rgb(255, 255, 255);
+    font-size: 90px;
+    text-transform: lowercase;
+    -webkit-text-stroke: 2px #850B4E;
+    margin: 5px 0;
+}
+
+.main-container {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 90%;
+    max-width: 1400px;
+    height: 70vh;
+}
+
+.video-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 75%;
+    height: 75%;
+}
+
+.img-container {
+    flex-grow: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 85%;
+}
+
+.img-container img {
+    border: 5px solid #850B4E;
+    border-radius: 10px;
+    width: 100%;
+    max-width: 900px;
+    max-height: 100%;
+}
+
+.text-container {
+    width: 100%;
+    display: flex;
+    justify-content: center; /* Center the text horizontally */
+    margin-top: 10px;
+    text-align: center; /* Center the text within each element */
+}
+
+.ear-value, .mar-value, .ai-response {
+    -webkit-text-stroke-width: 1px;
+    -webkit-text-stroke-color: #FFF;
+    font-family: 'Poppins';
+    font-weight: 400;
+    font-size: 22px;
+    margin: 0 10px; /* Add some margin between the elements */
+}
+
+.ear-value {
+    text-align: center; /* Center the text within the element */
+}
+
+.mar-value {
+    text-align: center; /* Center the text within the element */
+}
+
+.ai-response {
+    text-align: center; /* Center the text within the element */
+}
+
+.drowsy-status {
+    font-size: 24px;
+    font-weight: 700;
+    color: #FFD700;
+    margin-top: 10px;
+}
+
+.button {
+    padding: 12px 28px;
+    margin: 15px 2px;
+}
+
+.footer {
+    padding: 8px; /* Reduced padding */
+    width: 100%;
+    font-size: 14px; /* Reduced font size */
+    margin-top: auto;
+}
+
+.eepy-inline {
+    font-size: 24px; /* Reduced font size */
+}

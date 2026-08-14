@@ -1,9 +1,11 @@
+from __future__ import annotations
+
 import unittest
 
 from vision.drowsiness import FatigueState
 
 
-def make_state():
+def make_state() -> FatigueState:
     return FatigueState(
         eye_grace_seconds=0.5,
         eye_ramp_seconds=1.0,
@@ -14,7 +16,7 @@ def make_state():
 
 
 class FatigueStateTests(unittest.TestCase):
-    def test_normal_blink_is_ignored(self):
+    def test_normal_blink_is_ignored(self) -> None:
         state = make_state()
 
         state.update(1.0, True, 0.0, 0.0)
@@ -25,7 +27,7 @@ class FatigueStateTests(unittest.TestCase):
         self.assertFalse(blink.is_drowsy)
         self.assertFalse(reopened.is_drowsy)
 
-    def test_full_eye_severity_confirms_after_grace_and_ramp(self):
+    def test_full_eye_severity_confirms_after_grace_and_ramp(self) -> None:
         state = make_state()
 
         state.update(1.0, True, 0.0, 0.0)
@@ -36,7 +38,7 @@ class FatigueStateTests(unittest.TestCase):
         self.assertTrue(confirmed.is_drowsy)
         self.assertTrue(confirmed.just_confirmed)
 
-    def test_moderate_eye_severity_takes_proportionally_longer(self):
+    def test_moderate_eye_severity_takes_proportionally_longer(self) -> None:
         state = make_state()
 
         state.update(0.5, True, 0.0, 0.0)
@@ -46,14 +48,14 @@ class FatigueStateTests(unittest.TestCase):
         self.assertFalse(before.is_drowsy)
         self.assertTrue(confirmed.is_drowsy)
 
-    def test_mouth_evidence_cannot_confirm_without_closed_eyes(self):
+    def test_mouth_evidence_cannot_confirm_without_closed_eyes(self) -> None:
         state = make_state()
 
         update = state.update(0.0, False, 1.0, 10.0)
 
         self.assertFalse(update.is_drowsy)
 
-    def test_mouth_evidence_can_corroborate_eye_closure(self):
+    def test_mouth_evidence_can_corroborate_eye_closure(self) -> None:
         state = make_state()
 
         state.update(0.5, True, 1.0, 0.0)
@@ -61,7 +63,7 @@ class FatigueStateTests(unittest.TestCase):
 
         self.assertTrue(update.is_drowsy)
 
-    def test_confirmation_is_one_shot_until_recovery(self):
+    def test_confirmation_is_one_shot_until_recovery(self) -> None:
         state = make_state()
 
         state.update(1.0, True, 0.0, 0.0)
@@ -73,7 +75,7 @@ class FatigueStateTests(unittest.TestCase):
         self.assertFalse(sustained.just_confirmed)
         self.assertTrue(recovered.just_recovered)
 
-    def test_missing_face_clears_timers_history_and_fatigue(self):
+    def test_missing_face_clears_timers_history_and_fatigue(self) -> None:
         state = make_state()
 
         state.update(1.0, True, 1.0, 0.0)

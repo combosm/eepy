@@ -1,4 +1,20 @@
-# eepy
+# Eepy - The AI Driving Assistant
+
+Fatigue is a factor in a large share of road crashes, and unlike speeding or drunk driving
+it's hard to self-detect. You don't usually notice you're too tired to drive safely until
+it's too late. Eepy watches the driver and flags drowsiness as it happens,
+instead of relying on the driver to catch it themselves.
+
+## How it works
+
+Each frame from the camera is run through a face detector (OpenCV) and a facial landmark
+model (dlib) to locate 68 points on the driver's face. From those points, EEPY computes:
+
+- **EAR (Eye Aspect Ratio)**: how open or closed the eyes are
+- **MAR (Mouth Aspect Ratio)**: how open the mouth is, to catch yawning
+
+Drowsiness is confirmed from *sustained* eye closure, optionally corroborated by recent
+yawning. There's also a voice assistant you can query on demand from the same page.
 
 ## Installation
 
@@ -18,9 +34,3 @@ curl -L -o models/shape_predictor_68_face_landmarks.dat.bz2 \
   https://raw.githubusercontent.com/davisking/dlib-models/master/shape_predictor_68_face_landmarks.dat.bz2
 bunzip2 models/shape_predictor_68_face_landmarks.dat.bz2
 ```
-
-The decompressed file must end up at `models/shape_predictor_68_face_landmarks.dat` — that is
-the path `vision/camera.py` loads it from.
-
-The other two model files (`opencv_face_detector_uint8.pb` and `opencv_face_detector.pbtxt`)
-are tracked in the repository and need no separate download.

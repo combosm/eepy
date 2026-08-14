@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+from collections.abc import Iterator
+
 import cv2
 import dlib
 import numpy as np
@@ -59,7 +63,7 @@ data_store = {
 }
 
 
-def eye_aspect_ratio(eye):
+def eye_aspect_ratio(eye: np.ndarray) -> float:
     """calculate Eye Aspect Ratio (EAR)"""
     A = distance.euclidean(eye[1], eye[5])  # vertical
     B = distance.euclidean(eye[2], eye[4])  # vertical
@@ -68,7 +72,7 @@ def eye_aspect_ratio(eye):
     return round(ear, 3)
 
 
-def mouth_aspect_ratio(mouth):
+def mouth_aspect_ratio(mouth: np.ndarray) -> float:
     """calculate Mouth Aspect Ratio (MAR)"""
     A = distance.euclidean(mouth[1], mouth[5])  # vertical
     B = distance.euclidean(mouth[2], mouth[4])  # vertical
@@ -77,23 +81,23 @@ def mouth_aspect_ratio(mouth):
     return round(mar, 3)
 
 
-def clamp(value, lower=0.0, upper=1.0):
+def clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
     return max(lower, min(value, upper))
 
 
-def normalize_eye_closure(ear):
+def normalize_eye_closure(ear: float) -> float:
     """map open-to-closed EAR values onto a clamped [0, 1] score"""
     score = (EAR_OPEN_BOUND - ear) / (EAR_OPEN_BOUND - EAR_CLOSED_BOUND)
     return clamp(score)
 
 
-def normalize_mouth_opening(mar):
+def normalize_mouth_opening(mar: float) -> float:
     """map resting-to-yawning MAR values onto a clamped [0, 1] score"""
     score = (mar - MAR_RESTING_BOUND) / (MAR_YAWN_BOUND - MAR_RESTING_BOUND)
     return clamp(score)
 
 
-def generate_frames():
+def generate_frames() -> Iterator[bytes]:
     cap = cv2.VideoCapture(0)
     benchmark = EepyBenchmark(BENCHMARK_ENABLED, BENCHMARK_FRAME_COUNT)
     fatigue_state = FatigueState(
