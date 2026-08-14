@@ -12,7 +12,7 @@ pygame
 pyaudio
 python-dotenv
 requests
-duckduckgo_search
+ddgs
 wikipedia
 flask
 flask_socketio
