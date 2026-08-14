@@ -6,151 +6,9 @@
     <title>EEPY</title>
     <link href="https://fonts.googleapis.com/css2?family=Pacifico&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;700&display=swap" rel="stylesheet">
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400..700&display=swap');
-        
-        body {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            min-height: 100vh;
-            margin: 0;
-            text-align: center;
-            font-family: Arial, sans-serif;
-            background-color: #000000;
-            color: white;
-        }
-
-        /* Navbar styles - made consistent with home page */
-        .navbar {
-            background-color: #850B4E;
-            overflow: hidden;
-            width: 100%;
-        }
-        .navbar a {
-            float: left;
-            display: block;
-            color: #f2f2f2;
-            text-align: center;
-            padding: 14px 16px;
-            text-decoration: none;
-        }
-        .navbar a:hover {
-            background-color: #ddd;
-            color: black;
-        }
-
-        h1 {
-            font-family: 'Pixelify Sans';
-            color: rgb(255, 255, 255);
-            font-size: 90px;
-            text-transform: lowercase;
-            -webkit-text-stroke: 2px #850B4E;
-            margin: 5px 0;
-        }
-
-        .main-container {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            width: 90%;
-            max-width: 1400px;
-            height: 70vh;
-        }
-
-        .video-container {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            width: 75%;
-            height: 75%;
-        }
-
-        .img-container {
-            flex-grow: 1;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            height: 85%;
-        }
-
-        .img-container img {
-            border: 5px solid #850B4E;
-            border-radius: 10px;
-            width: 100%;
-            max-width: 900px;
-            max-height: 100%;
-        }
-
-        .text-container {
-            width: 100%;
-            display: flex;
-            justify-content: center; /* Center the text horizontally */
-            margin-top: 10px;
-            text-align: center; /* Center the text within each element */
-        }
-
-        .ear-value, .mar-value, .ai-response {
-            -webkit-text-stroke-width: 1px;
-            -webkit-text-stroke-color: #FFF;
-            font-family: 'Poppins';
-            font-weight: 400;
-            font-size: 22px;
-            margin: 0 10px; /* Add some margin between the elements */
-        }
-
-        .ear-value {
-            text-align: center; /* Center the text within the element */
-        }
-
-        .mar-value {
-            text-align: center; /* Center the text within the element */
-        }
-
-        .ai-response {
-            text-align: center; /* Center the text within the element */
-        }
-
-        .drowsy-status {
-            font-size: 24px;
-            font-weight: 700;
-            color: #FFD700;
-            margin-top: 10px;
-        }
-
-        .button {
-            background-color: #850B4E;
-            border: none;
-            color: white;
-            padding: 12px 28px;
-            text-align: center;
-            text-decoration: none;
-            display: inline-block;
-            font-size: 16px;
-            margin: 15px 2px;
-            cursor: pointer;
-            font-family: 'Poppins', sans-serif; 
-        }
-        
-        /* Adding footer consistent with home page */
-        .footer {
-            text-align: center;
-            padding: 8px; /* Reduced padding */
-            width: 100%;
-            font-size: 14px; /* Reduced font size */
-            font-family: 'Poppins', sans-serif;
-            color: #FFF;
-            background: #850B4E;
-            margin-top: auto;
-        }
-        
-        .eepy-inline {
-            font-family: 'Pixelify Sans', sans-serif;
-            color: #f2f2f2;
-            font-size: 24px; /* Reduced font size */
-            -webkit-text-stroke: 0.5px #850B4E;
-        }
-    </style>
+    <link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400..700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/base.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/index.css') }}">
 </head>
 <body>
     <div class="navbar">
@@ -166,15 +24,15 @@
             </div>
             <div class="text-container">
                 <div class="ear-value">
-                    <span>EAR Value:</span> 
+                    <span>EAR Value:</span>
                     <span id="ear_value">Waiting for data...</span>
                 </div>
                 <div class="mar-value">
-                    <span>MAR Value:</span> 
+                    <span>MAR Value:</span>
                     <span id="mar_value">Waiting for data...</span>
                 </div>
                 <div class="ai-response">
-                    <span>AI Response:</span> 
+                    <span>AI Response:</span>
                     <span id="ai_response">Waiting for data...</span>
                 </div>
             </div>
@@ -190,42 +48,6 @@
     </footer>
 
     <script src="https://cdn.socket.io/4.0.0/socket.io.min.js"></script>
-    <script>
-        var socket = io();
-        var DATA_POLL_INTERVAL_MS = 3000; // was 1000ms, slowed to reduce server load
-
-        socket.on("update_data", function(data) {
-            document.getElementById("ear_value").innerText = data.EAR;
-            document.getElementById("mar_value").innerText = data.MAR;
-            document.getElementById("drowsy_value").innerText = 
-                "Drowsiness Status: " + (data.is_drowsy ? "Yes 💤" : "No ✅");
-            document.getElementById("ai_response").innerText = data.ai_response;
-        });
-
-        function requestData() {
-            fetch('/data')
-                .then(response => response.json())
-                .then(data => {
-                    document.getElementById("ear_value").innerText = data.EAR;
-                    document.getElementById("mar_value").innerText = data.MAR;
-                    document.getElementById("drowsy_value").innerText = 
-                        "Drowsiness Status: " + (data.is_drowsy ? "Yes 💤" : "No ✅");
-                    document.getElementById("ai_response").innerText = data.ai_response;
-                })
-                .catch(error => console.error('Error fetching data:', error));
-        }
-
-        setInterval(requestData, DATA_POLL_INTERVAL_MS);
-
-        function fetchAIOutput() {
-            fetch('/ai_output')
-                .then(response => response.json())
-                .then(data => {
-                    console.log("AI Output:", data.message);  // Console log for debugging
-                    document.getElementById("ai_response").innerText = data.message;
-                })
-                .catch(error => console.error('Error fetching AI output:', error));
-        }
-    </script>
+    <script src="{{ url_for('static', filename='js/index.js') }}"></script>
 </body>
 </html>
