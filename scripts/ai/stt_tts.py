@@ -4,21 +4,25 @@ import tempfile
 import pygame
 import os
 
-#----------------- Speech to text -----------------#
-# Initialise the recognizer
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
 r = sr.Recognizer()
 
-# Function to record audio and convert it to text
 def record_audio():
+    """record audio and convert it to text"""
+
     # loop indefinitely until the user stops yapping
     while(1):
         # connect user mic and listen to audio
         with sr.Microphone() as source:
             r.adjust_for_ambient_noise(source, duration=0.2)
             audio = r.listen(source)
-            
+
+            # converting user audio to text using google 
             try:
-                # Converting user audio to text using google 
                 text = r.recognize_google(audio)
                 return text
             except Exception as e:
@@ -26,15 +30,22 @@ def record_audio():
                 return None
 
 
-#----------------- Text to Speech -----------------#
 """
 source: https://www.youtube.com/watch?v=3BMy5KPa_kQ 
 """
-API_KEY = "sk_2a4636131ac359403267066a77a5142a16aa3f934dc63a87"
 DEFAULT_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"
 
+def get_api_key():
+    api_key = os.getenv("ELEVENLABS_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "ELEVENLABS_API_KEY environment variable is not set. "
+            "Copy .env.example to .env and add your key."
+        )
+    return api_key
+
 def play_audio(file_path):
-    # Plays audio through pytgame
+    """plays audio through pytgame"""
     try:
         pygame.mixer.init()
         pygame.mixer.music.load(file_path)
@@ -54,11 +65,10 @@ def output_audio(text):
     # API endpoint for text-to-speech conversion
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
     
-    # Headers with API key
     headers = {
         "Accept": "audio/mpeg",
         "Content-Type": "application/json",
-        "xi-api-key": API_KEY
+        "xi-api-key": get_api_key()
     }
     
     # Request payload
