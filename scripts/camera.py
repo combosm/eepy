@@ -56,6 +56,7 @@ data_store = {
     "EAR": 0,
     "MAR": 0,
     "is_drowsy": False,
+    "ai_response": "",
 }
 
 # function to calculate Eye Aspect Ratio (EAR)
@@ -106,124 +107,129 @@ def generate_frames():
         mouth_weight=MOUTH_SCORE_WEIGHT,
     )
     
-    while True:
-        # End-to-end timing includes blocking capture and JPEG encoding.
-        loop_started_at = benchmark.now()
-        success, frame = cap.read()
-        if not success:
-            break
+    try:
+        while True:
+            # End-to-end timing includes blocking capture and JPEG encoding.
+            loop_started_at = benchmark.now()
+            success, frame = cap.read()
+            if not success:
+                break
 
-        # Processing-only timing excludes camera capture and stream-consumer waits.
-        processing_started_at = benchmark.now()
-        non_vision_seconds = 0.0
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)  # convert frame to grayscale
-        h, w = frame.shape[:2]
+            # Processing-only timing excludes camera capture and stream-consumer waits.
+            processing_started_at = benchmark.now()
+            non_vision_seconds = 0.0
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)  # convert frame to grayscale
+            h, w = frame.shape[:2]
 
-        # detecting face
-        blob = cv2.dnn.blobFromImage(frame, 1.0, (300, 300), (104, 177, 123), False, False)
-        face_net.setInput(blob)
-        detections = face_net.forward()
+            # detecting face
+            blob = cv2.dnn.blobFromImage(frame, 1.0, (300, 300), (104, 177, 123), False, False)
+            face_net.setInput(blob)
+            detections = face_net.forward()
 
-        # Track one driver face per frame. The largest detected face is the
-        # clearest available proxy for the closest/primary driver.
-        driver_detection = None
-        driver_area = 0
-        for i in range(detections.shape[2]):
-            confidence = detections[0, 0, i, 2]
-            if confidence > 0.5:
-                box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
-                (x, y, x1, y1) = box.astype("int")
-                x, y = max(0, x), max(0, y)
-                x1, y1 = min(w - 1, x1), min(h - 1, y1)
-                area = max(0, x1 - x) * max(0, y1 - y)
-                if area > driver_area:
-                    driver_area = area
-                    driver_detection = (x, y, x1, y1)
+            # Track one driver face per frame. The largest detected face is the
+            # clearest available proxy for the closest/primary driver.
+            driver_detection = None
+            driver_area = 0
+            for i in range(detections.shape[2]):
+                confidence = detections[0, 0, i, 2]
+                if confidence > 0.5:
+                    box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
+                    (x, y, x1, y1) = box.astype("int")
+                    x, y = max(0, x), max(0, y)
+                    x1, y1 = min(w - 1, x1), min(h - 1, y1)
+                    area = max(0, x1 - x) * max(0, y1 - y)
+                    if area > driver_area:
+                        driver_area = area
+                        driver_detection = (x, y, x1, y1)
 
-        if driver_detection is None:
-            fatigue_state.face_missing()
-            data_store["is_drowsy"] = False
-            blink_count = 0
-            yawn_count = 0
-            benchmark.observe_raw_signal(False, benchmark.now())
-        else:
-                face_rect = dlib.rectangle(*driver_detection)
+            if driver_detection is None:
+                fatigue_state.face_missing()
+                data_store["is_drowsy"] = False
+                blink_count = 0
+                yawn_count = 0
+                benchmark.observe_raw_signal(False, benchmark.now())
+            else:
+                    face_rect = dlib.rectangle(*driver_detection)
 
-                # detecting landmarks facial landmarks
-                shape = predictor(gray, face_rect)
-                landmarks = np.array([[shape.part(i).x, shape.part(i).y] for i in range(68)])
+                    # detecting landmarks facial landmarks
+                    shape = predictor(gray, face_rect)
+                    landmarks = np.array([[shape.part(i).x, shape.part(i).y] for i in range(68)])
 
-                # EAR calculation for blink detection
-                left_eye = landmarks[LEFT_EYE]
-                right_eye = landmarks[RIGHT_EYE]
-                ear = (eye_aspect_ratio(left_eye) + eye_aspect_ratio(right_eye)) / 2.0
-                ear = round(ear, 3)
-                data_store["EAR"] = ear
+                    # EAR calculation for blink detection
+                    left_eye = landmarks[LEFT_EYE]
+                    right_eye = landmarks[RIGHT_EYE]
+                    ear = (eye_aspect_ratio(left_eye) + eye_aspect_ratio(right_eye)) / 2.0
+                    ear = round(ear, 3)
+                    data_store["EAR"] = ear
 
-                # MAR calculation for yawning detection
-                mouth = landmarks[MOUTH]
-                mar = mouth_aspect_ratio(mouth)
-                mar = round(mar, 3)
-                data_store["MAR"] = mar
+                    # MAR calculation for yawning detection
+                    mouth = landmarks[MOUTH]
+                    mar = mouth_aspect_ratio(mouth)
+                    mar = round(mar, 3)
+                    data_store["MAR"] = mar
 
-                # Normalize differently scaled EAR/MAR values before aggregation.
-                eye_closure_score = normalize_eye_closure(ear)
-                mouth_open_score = normalize_mouth_opening(mar)
+                    # Normalize differently scaled EAR/MAR values before aggregation.
+                    eye_closure_score = normalize_eye_closure(ear)
+                    mouth_open_score = normalize_mouth_opening(mar)
 
-                # Start an episode at the first raw eye-closure or yawn signal.
-                observed_at = benchmark.now()
-                benchmark.observe_raw_signal(
-                    ear < EAR_DROWSY_THRESHOLD or mar > MAR_DROWSY_THRESHOLD,
-                    observed_at,
-                )
-                fatigue = fatigue_state.update(
-                    eye_severity=eye_closure_score,
-                    eye_closed=ear < EAR_DROWSY_THRESHOLD,
-                    mouth_severity=mouth_open_score,
-                    now=observed_at,
-                )
+                    # Start an episode at the first raw eye-closure or yawn signal.
+                    observed_at = benchmark.now()
+                    benchmark.observe_raw_signal(
+                        ear < EAR_DROWSY_THRESHOLD or mar > MAR_DROWSY_THRESHOLD,
+                        observed_at,
+                    )
+                    fatigue = fatigue_state.update(
+                        eye_severity=eye_closure_score,
+                        eye_closed=ear < EAR_DROWSY_THRESHOLD,
+                        mouth_severity=mouth_open_score,
+                        now=observed_at,
+                    )
                 
-                if ear < EAR_DROWSY_THRESHOLD:
-                    blink_count += 1
-                    if blink_count > 10:      # ADJUST THIS
-                        cv2.putText(frame, "DROWSY! Wake up!", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 4)
-                else:
-                    blink_count = 0
+                    if ear < EAR_DROWSY_THRESHOLD:
+                        blink_count += 1
+                        if blink_count > 10:      # ADJUST THIS
+                            cv2.putText(frame, "DROWSY! Wake up!", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 4)
+                    else:
+                        blink_count = 0
 
-                # detecting yawning
-                if mar > MAR_DROWSY_THRESHOLD:
-                    yawn_count += 1
-                    if yawn_count > 10:  # ADJUST THIS
-                        cv2.putText(frame, "Yawning! Take a break!", (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 4)
-                else:
-                    yawn_count = 0
+                    # detecting yawning
+                    if mar > MAR_DROWSY_THRESHOLD:
+                        yawn_count += 1
+                        if yawn_count > 10:  # ADJUST THIS
+                            cv2.putText(frame, "Yawning! Take a break!", (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 4)
+                    else:
+                        yawn_count = 0
 
-                data_store["is_drowsy"] = fatigue.is_drowsy
-                if fatigue.just_confirmed:
-                    benchmark.confirm_fatigue(observed_at)
+                    data_store["is_drowsy"] = fatigue.is_drowsy
+                    if fatigue.just_confirmed:
+                        benchmark.confirm_fatigue(observed_at)
                 
-                # sending data to frontend
-                data = {"EAR": ear, "MAR": mar, "is_drowsy": data_store["is_drowsy"]}
-                if fatigue.just_confirmed:
-                    # Invocation, rather than Socket.IO delivery, is the local intervention boundary.
-                    benchmark.intervention_invoked(benchmark.now())
-                emit_started_at = benchmark.now()
-                socketio.emit("update_data", data)
-                non_vision_seconds += benchmark.now() - emit_started_at
+                    # Sending data to frontend. Emit the whole store so the socket payload and
+                    # the /data response always have the same shape.
+                    data = dict(data_store)
+                    if fatigue.just_confirmed:
+                        # Invocation, rather than Socket.IO delivery, is the local intervention boundary.
+                        benchmark.intervention_invoked(benchmark.now())
+                    emit_started_at = benchmark.now()
+                    socketio.emit("update_data", data)
+                    non_vision_seconds += benchmark.now() - emit_started_at
 
-                # drawing landmarks
-                for (x, y) in landmarks:
-                    cv2.circle(frame, (x, y), 1, (0, 255, 0), -1)
+                    # drawing landmarks
+                    for (x, y) in landmarks:
+                        cv2.circle(frame, (x, y), 1, (0, 255, 0), -1)
 
-        processing_finished_at = benchmark.now()
+            processing_finished_at = benchmark.now()
 
-        # converting frame to bytes for streaming
-        _, buffer = cv2.imencode('.jpg', frame)
-        frame_bytes = buffer.tobytes()
-        loop_finished_at = benchmark.now()
-        benchmark.record_frame(
-            processing_finished_at - processing_started_at - non_vision_seconds,
-            loop_finished_at - loop_started_at,
-        )
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+            # converting frame to bytes for streaming
+            _, buffer = cv2.imencode('.jpg', frame)
+            frame_bytes = buffer.tobytes()
+            loop_finished_at = benchmark.now()
+            benchmark.record_frame(
+                processing_finished_at - processing_started_at - non_vision_seconds,
+                loop_finished_at - loop_started_at,
+            )
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+    finally:
+        # Release the capture even if the client disconnects mid-stream.
+        cap.release()

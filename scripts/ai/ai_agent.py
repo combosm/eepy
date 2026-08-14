@@ -60,23 +60,47 @@ def process_response(raw_response):
 ai_response = "AI RESPONSE"
 
 
+_agent_executor = None
+
+
+def get_agent_executor():
+    """Return the process-wide AgentExecutor, building it on first use."""
+    global _agent_executor
+    if _agent_executor is None:
+        agent, tools = initialise_agent()
+        _agent_executor = AgentExecutor(agent=agent, tools=tools)
+    return _agent_executor
+
+
+def invoke_agent(agent_executor, query, chat_history):
+    """record one turn in `chat_history` and return the agent's raw response."""
+    chat_history.append({"role": "user", "content": query})
+    raw_response = agent_executor.invoke({"query": query, "chat_history": chat_history})
+    chat_history.append({"role": "assistant", "content": raw_response.get("output")})
+    return raw_response
+
+
+def answer_once(query):
+    """run a single query through the agent and return the parsed answer"""
+    global ai_response
+    ai_response = process_response(invoke_agent(get_agent_executor(), query, []))
+    return ai_response
+
+
 def run_ai(agent, tools):
-    global ai_response  
+    global ai_response
     # Create an executor to run the agent with the tools
     agent_executor = AgentExecutor(agent=agent, tools=tools)
     chat_history = []
     
     while True:
         query = scripts.ai.stt_tts.record_audio()
+        
+        if not query:
+            continue
 
         # Record user query and chat history
-        if query == None:
-            continue
-        
-        if query:
-            chat_history.append({"role": "user", "content": query})
-            raw_response = agent_executor.invoke({"query": query, "chat_history": chat_history})
-            chat_history.append({"role": "assistant", "content": raw_response.get("output")})
+        raw_response = invoke_agent(agent_executor, query, chat_history)
 
         # Check if the user wants to exit
         deactivate_words = ["bye", "goodbye", "later"]
