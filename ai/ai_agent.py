@@ -4,9 +4,9 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_classic.agents import create_tool_calling_agent, AgentExecutor
-from scripts.ai.tools import search_tool, wiki_tool
+from ai.tools import search_tool, wiki_tool
 import os
-import scripts.ai.stt_tts
+import ai.stt_tts
 
 load_dotenv()
 
@@ -94,7 +94,7 @@ def run_ai(agent, tools):
     chat_history = []
     
     while True:
-        query = scripts.ai.stt_tts.record_audio()
+        query = ai.stt_tts.record_audio()
         
         if not query:
             continue
@@ -105,7 +105,7 @@ def run_ai(agent, tools):
         # Check if the user wants to exit
         deactivate_words = ["bye", "goodbye", "later"]
         if any(word in query.lower() for word in deactivate_words):
-            scripts.ai.stt_tts.output_audio("Goodbye!")
+            ai.stt_tts.output_audio("Goodbye!")
             break
 
         # Process the response
@@ -115,7 +115,7 @@ def run_ai(agent, tools):
             print(f"ai_response: {ai_response}")
 
             # Convert the ai_response to speech using text-to-speech
-            scripts.ai.stt_tts.output_audio(ai_response)
+            ai.stt_tts.output_audio(ai_response)
 
 def main():
     agent, tools = initialise_agent()
@@ -125,12 +125,12 @@ def main():
 
     while True:    
         print("Listening for activation...")
-        detected_text = scripts.ai.stt_tts.record_audio()
+        detected_text = ai.stt_tts.record_audio()
         print(f"Detected text: {detected_text}")  
 
         # Check if the wake word is detected
         if detected_text and any(activate_word in detected_text.lower() for activate_word in activate_words):
-            scripts.ai.stt_tts.output_audio("Hey!")
+            ai.stt_tts.output_audio("Hey!")
             # Activate the AI
             run_ai(agent, tools)  
         else:

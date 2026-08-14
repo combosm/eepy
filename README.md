@@ -20,7 +20,7 @@ bunzip2 models/shape_predictor_68_face_landmarks.dat.bz2
 ```
 
 The decompressed file must end up at `models/shape_predictor_68_face_landmarks.dat` — that is
-the path `scripts/camera.py` loads it from.
+the path `vision/camera.py` loads it from.
 
 The other two model files (`opencv_face_detector_uint8.pb` and `opencv_face_detector.pbtxt`)
 are tracked in the repository and need no separate download.

@@ -1,8 +1,8 @@
 from flask import Flask, render_template, Response, jsonify
-from scripts.camera import generate_frames, data_store, socketio
+from vision.camera import generate_frames, data_store, socketio
 import os
-from scripts.ai.ai_agent import answer_once
-from scripts.ai.stt_tts import record_audio
+from ai.ai_agent import answer_once
+from ai.stt_tts import record_audio
 
 app = Flask(__name__)
 socketio.init_app(app, cors_allowed_origins="*")

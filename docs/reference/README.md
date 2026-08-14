@@ -2,7 +2,7 @@
 
 Landmark maps for the dlib 68-point face predictor
 (`models/shape_predictor_68_face_landmarks.dat`). They are here to explain the index
-constants in `scripts/camera.py`, which are otherwise unreadable magic numbers.
+constants in `vision/camera.py`, which are otherwise unreadable magic numbers.
 
 
 ## The two files
@@ -17,7 +17,7 @@ Both show the same landmark layout. They differ only by an offset of one.
 
 ## What the constants mean
 
-From `scripts/camera.py`:
+From `vision/camera.py`:
 
 ```python
 LEFT_EYE  = [36, 37, 38, 39, 40, 41]

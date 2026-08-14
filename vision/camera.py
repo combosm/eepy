@@ -3,12 +3,12 @@ import dlib
 import numpy as np
 from scipy.spatial import distance
 from flask_socketio import SocketIO
-from scripts.benchmark import (
+from vision.benchmark import (
     BENCHMARK_ENABLED,
     BENCHMARK_FRAME_COUNT,
     EepyBenchmark,
 )
-from scripts.drowsiness import FatigueState
+from vision.drowsiness import FatigueState
 
 socketio = SocketIO()
 ### TODO

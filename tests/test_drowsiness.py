@@ -1,6 +1,6 @@
 import unittest
 
-from scripts.drowsiness import FatigueState
+from vision.drowsiness import FatigueState
 
 
 def make_state():
