@@ -11,20 +11,17 @@ from scripts.benchmark import (
 from scripts.drowsiness import FatigueState
 
 socketio = SocketIO()
-### to do
-# CALIBRATION !!!!!!!!!!!!!!!!
-
-# covering mouth when yawning
-# consider glasses detection
-# ADJUST THRESHOLDS
-
-# covering mouth when yawning
-# consider glasses detection
-
-# 0. if eyes are closed for too long, wake up
-# 1. drowsiness eye detection is fixed i think -> check with everyones eyes??
-# 2. add detection for coverign hand -> if possible, differentiate between covering mouth and just having it there cus of lauhging or smth
-# 3. previous point ties in with 2, emotion detection needs to be added - laughing can close eyes and be mistaken for drowsiness
+### TODO
+# - Calibration: per-user EAR/MAR thresholds instead of the fixed constants below.
+# - Glasses detection.
+# - Detect a hand covering the mouth, and distinguish that from a hand just resting near it
+#   (e.g. while laughing) - ties into emotion detection below.
+# - Emotion detection: laughing can close the eyes and read as drowsiness; needs to be told
+#   apart from real fatigue.
+# - Wire up an actual intervention (voice prompt) when drowsiness is confirmed. Today
+#   confirmation only updates state and benchmark data.
+# - Validate the EAR/MAR normalization bounds against a wider range of eyes than they were
+#   tuned on.
 
 # OpenCV Face Detector (DNN)
 face_net = cv2.dnn.readNetFromTensorflow("models/opencv_face_detector_uint8.pb", "models/opencv_face_detector.pbtxt")
@@ -39,7 +36,9 @@ LEFT_EYE = [36, 37, 38, 39, 40, 41]
 RIGHT_EYE = [42, 43, 44, 45, 46, 47]
 MOUTH = [48, 50, 52, 54, 56, 58]
 
-# Normalization bounds are centered on the existing binary fatigue thresholds.
+FACE_DETECTION_CONFIDENCE_THRESHOLD = 0.5
+
+# Normalisation bounds are centered on the existing binary fatigue thresholds.
 EAR_CLOSED_BOUND = 0.2
 EAR_DROWSY_THRESHOLD = 0.3
 EAR_OPEN_BOUND = 0.4
@@ -59,16 +58,18 @@ data_store = {
     "ai_response": "",
 }
 
-# function to calculate Eye Aspect Ratio (EAR)
+
 def eye_aspect_ratio(eye):
+    """calculate Eye Aspect Ratio (EAR)"""
     A = distance.euclidean(eye[1], eye[5])  # vertical
     B = distance.euclidean(eye[2], eye[4])  # vertical
     C = distance.euclidean(eye[0], eye[3])  # horizontal
     ear = (A + B) / (2.0 * C)
     return round(ear, 3)
 
-# function to calculate Mouth Aspect Ratio (MAR)
+
 def mouth_aspect_ratio(mouth):
+    """calculate Mouth Aspect Ratio (MAR)"""
     A = distance.euclidean(mouth[1], mouth[5])  # vertical
     B = distance.euclidean(mouth[2], mouth[4])  # vertical
     C = distance.euclidean(mouth[0], mouth[3])  # horizontal
@@ -81,13 +82,13 @@ def clamp(value, lower=0.0, upper=1.0):
 
 
 def normalize_eye_closure(ear):
-    """Map open-to-closed EAR values onto a clamped [0, 1] score."""
+    """map open-to-closed EAR values onto a clamped [0, 1] score"""
     score = (EAR_OPEN_BOUND - ear) / (EAR_OPEN_BOUND - EAR_CLOSED_BOUND)
     return clamp(score)
 
 
 def normalize_mouth_opening(mar):
-    """Map resting-to-yawning MAR values onto a clamped [0, 1] score."""
+    """map resting-to-yawning MAR values onto a clamped [0, 1] score"""
     score = (mar - MAR_RESTING_BOUND) / (MAR_YAWN_BOUND - MAR_RESTING_BOUND)
     return clamp(score)
 
@@ -105,16 +106,18 @@ def generate_frames():
     
     try:
         while True:
-            # End-to-end timing includes blocking capture and JPEG encoding.
+            # end-to-end timing includes blocking capture and JPEG encoding
             loop_started_at = benchmark.now()
             success, frame = cap.read()
             if not success:
                 break
 
-            # Processing-only timing excludes camera capture and stream-consumer waits.
+            # processing-only timing excludes camera capture and stream-consumer waits
             processing_started_at = benchmark.now()
             non_vision_seconds = 0.0
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)  # convert frame to grayscale
+
+            # convert frame to grayscale
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             h, w = frame.shape[:2]
 
             # detecting face
@@ -128,7 +131,7 @@ def generate_frames():
             driver_area = 0
             for i in range(detections.shape[2]):
                 confidence = detections[0, 0, i, 2]
-                if confidence > 0.5:
+                if confidence > FACE_DETECTION_CONFIDENCE_THRESHOLD:
                     box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
                     (x, y, x1, y1) = box.astype("int")
                     x, y = max(0, x), max(0, y)
@@ -143,62 +146,61 @@ def generate_frames():
                 data_store["is_drowsy"] = False
                 benchmark.observe_raw_signal(False, benchmark.now())
             else:
-                    face_rect = dlib.rectangle(*driver_detection)
+                face_rect = dlib.rectangle(*driver_detection)
 
-                    # detecting landmarks facial landmarks
-                    shape = predictor(gray, face_rect)
-                    landmarks = np.array([[shape.part(i).x, shape.part(i).y] for i in range(68)])
+                # detecting landmarks facial landmarks
+                shape = predictor(gray, face_rect)
+                landmarks = np.array([[shape.part(i).x, shape.part(i).y] for i in range(68)])
 
-                    # EAR calculation for blink detection
-                    left_eye = landmarks[LEFT_EYE]
-                    right_eye = landmarks[RIGHT_EYE]
-                    ear = (eye_aspect_ratio(left_eye) + eye_aspect_ratio(right_eye)) / 2.0
-                    ear = round(ear, 3)
-                    data_store["EAR"] = ear
+                # EAR calculation for blink detection
+                left_eye = landmarks[LEFT_EYE]
+                right_eye = landmarks[RIGHT_EYE]
+                ear = (eye_aspect_ratio(left_eye) + eye_aspect_ratio(right_eye)) / 2.0
+                ear = round(ear, 3)
+                data_store["EAR"] = ear
 
-                    # MAR calculation for yawning detection
-                    mouth = landmarks[MOUTH]
-                    mar = mouth_aspect_ratio(mouth)
-                    mar = round(mar, 3)
-                    data_store["MAR"] = mar
+                # MAR calculation for yawning detection
+                mouth = landmarks[MOUTH]
+                mar = mouth_aspect_ratio(mouth)
+                mar = round(mar, 3)
+                data_store["MAR"] = mar
 
-                    # Normalize differently scaled EAR/MAR values before aggregation.
-                    eye_closure_score = normalize_eye_closure(ear)
-                    mouth_open_score = normalize_mouth_opening(mar)
+                # normalise differently scaled EAR/MAR values before aggregation
+                eye_closure_score = normalize_eye_closure(ear)
+                mouth_open_score = normalize_mouth_opening(mar)
 
-                    # Start an episode at the first raw eye-closure or yawn signal.
-                    observed_at = benchmark.now()
-                    benchmark.observe_raw_signal(
-                        ear < EAR_DROWSY_THRESHOLD or mar > MAR_DROWSY_THRESHOLD,
-                        observed_at,
-                    )
-                    fatigue = fatigue_state.update(
-                        eye_severity=eye_closure_score,
-                        eye_closed=ear < EAR_DROWSY_THRESHOLD,
-                        mouth_severity=mouth_open_score,
-                        now=observed_at,
-                    )
+                # start an episode at the first raw eye-closure or yawn signal
+                observed_at = benchmark.now()
+                benchmark.observe_raw_signal(
+                    ear < EAR_DROWSY_THRESHOLD or mar > MAR_DROWSY_THRESHOLD,
+                    observed_at,
+                )
+                fatigue = fatigue_state.update(
+                    eye_severity=eye_closure_score,
+                    eye_closed=ear < EAR_DROWSY_THRESHOLD,
+                    mouth_severity=mouth_open_score,
+                    now=observed_at,
+                )
 
-                    if fatigue.is_drowsy:
-                        cv2.putText(frame, "DROWSY! Wake up!", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 4)
+                if fatigue.is_drowsy:
+                    cv2.putText(frame, "DROWSY! Wake up!", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 4)
 
-                    data_store["is_drowsy"] = fatigue.is_drowsy
-                    if fatigue.just_confirmed:
-                        benchmark.confirm_fatigue(observed_at)
-                
-                    # Sending data to frontend. Emit the whole store so the socket payload and
-                    # the /data response always have the same shape.
-                    data = dict(data_store)
-                    if fatigue.just_confirmed:
-                        # Invocation, rather than Socket.IO delivery, is the local intervention boundary.
-                        benchmark.intervention_invoked(benchmark.now())
-                    emit_started_at = benchmark.now()
-                    socketio.emit("update_data", data)
-                    non_vision_seconds += benchmark.now() - emit_started_at
+                data_store["is_drowsy"] = fatigue.is_drowsy
+                if fatigue.just_confirmed:
+                    benchmark.confirm_fatigue(observed_at)
 
-                    # drawing landmarks
-                    for (x, y) in landmarks:
-                        cv2.circle(frame, (x, y), 1, (0, 255, 0), -1)
+                # sending data to frontend
+                data = dict(data_store)
+                if fatigue.just_confirmed:
+                    # no real intervention exists yet 
+                    benchmark.intervention_invoked(benchmark.now())
+                emit_started_at = benchmark.now()
+                socketio.emit("update_data", data)
+                non_vision_seconds += benchmark.now() - emit_started_at
+
+                # drawing landmarks
+                for (x, y) in landmarks:
+                    cv2.circle(frame, (x, y), 1, (0, 255, 0), -1)
 
             processing_finished_at = benchmark.now()
 
@@ -212,6 +214,6 @@ def generate_frames():
             )
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+    # release the capture even if the client disconnects mid-stream
     finally:
-        # Release the capture even if the client disconnects mid-stream.
         cap.release()

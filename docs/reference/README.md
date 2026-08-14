@@ -4,24 +4,16 @@ Landmark maps for the dlib 68-point face predictor
 (`models/shape_predictor_68_face_landmarks.dat`). They are here to explain the index
 constants in `scripts/camera.py`, which are otherwise unreadable magic numbers.
 
-Nothing in the codebase loads these files — they are documentation for humans.
 
 ## The two files
 
 | File | Numbering | Notes |
 |---|---|---|
-| `facial_landmarks_68_0_indexed.png` | 0–67 | **Matches the code.** Use this one when reading or editing `camera.py`. |
-| `facial_landmarks_68_1_indexed.webp` | 1–68 | Matches most published tutorials and the dlib paper. Kept because external references you find online will almost always use this numbering. |
+| `facial_landmarks_68_0_indexed.png` | 0–67 |  Use this one when reading or editing `camera.py` |
+| `facial_landmarks_68_1_indexed.webp` | 1–68 | Matches most published tutorials and the dlib paper. Not used in the code |
 
 Both show the same landmark layout. They differ only by an offset of one.
 
-> **Read this before changing any index.** `predictor` returns points addressed `0..67`, so
-> the code is 0-indexed and only the `.png` applies. The 1-indexed diagram is the more common
-> one online, which makes it the easy way to introduce an off-by-one — every constant below
-> would look one short if checked against it.
-
-The `.webp` file carried a `.png` extension until it was renamed here; the contents were
-always WebP.
 
 ## What the constants mean
 
