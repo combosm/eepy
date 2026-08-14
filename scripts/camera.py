@@ -92,11 +92,7 @@ def normalize_mouth_opening(mar):
     return clamp(score)
 
 
-blink_count = 0
-yawn_count = 0
-
 def generate_frames():
-    global blink_count, yawn_count
     cap = cv2.VideoCapture(0)
     benchmark = EepyBenchmark(BENCHMARK_ENABLED, BENCHMARK_FRAME_COUNT)
     fatigue_state = FatigueState(
@@ -145,8 +141,6 @@ def generate_frames():
             if driver_detection is None:
                 fatigue_state.face_missing()
                 data_store["is_drowsy"] = False
-                blink_count = 0
-                yawn_count = 0
                 benchmark.observe_raw_signal(False, benchmark.now())
             else:
                     face_rect = dlib.rectangle(*driver_detection)
@@ -184,21 +178,9 @@ def generate_frames():
                         mouth_severity=mouth_open_score,
                         now=observed_at,
                     )
-                
-                    if ear < EAR_DROWSY_THRESHOLD:
-                        blink_count += 1
-                        if blink_count > 10:      # ADJUST THIS
-                            cv2.putText(frame, "DROWSY! Wake up!", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 4)
-                    else:
-                        blink_count = 0
 
-                    # detecting yawning
-                    if mar > MAR_DROWSY_THRESHOLD:
-                        yawn_count += 1
-                        if yawn_count > 10:  # ADJUST THIS
-                            cv2.putText(frame, "Yawning! Take a break!", (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 4)
-                    else:
-                        yawn_count = 0
+                    if fatigue.is_drowsy:
+                        cv2.putText(frame, "DROWSY! Wake up!", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 4)
 
                     data_store["is_drowsy"] = fatigue.is_drowsy
                     if fatigue.just_confirmed:
