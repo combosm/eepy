@@ -192,6 +192,7 @@
     <script src="https://cdn.socket.io/4.0.0/socket.io.min.js"></script>
     <script>
         var socket = io();
+        var DATA_POLL_INTERVAL_MS = 3000; // was 1000ms, slowed to reduce server load
 
         socket.on("update_data", function(data) {
             document.getElementById("ear_value").innerText = data.EAR;
@@ -214,8 +215,7 @@
                 .catch(error => console.error('Error fetching data:', error));
         }
 
-        // Slowed down update interval from 1000ms to 3000ms (3 seconds)
-        setInterval(requestData, 3000);
+        setInterval(requestData, DATA_POLL_INTERVAL_MS);
 
         function fetchAIOutput() {
             fetch('/ai_output')

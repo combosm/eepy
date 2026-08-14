@@ -172,3 +172,9 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Node
+node_modules/
+
+# dlib landmark model — 95 MB, downloaded during setup per README
+models/shape_predictor_68_face_landmarks.dat

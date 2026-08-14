@@ -1,6 +1,5 @@
 numpy
 opencv-python
-pyttsx3
 dlib
 scipy
 pydantic
@@ -8,13 +7,12 @@ langchain-openai
 langchain-core
 langchain
 langchain-community
-openai
 speechrecognition
 pygame
 pyaudio
 python-dotenv
 requests
-duckduckgo_search
+ddgs
 wikipedia
 flask
 flask_socketio
