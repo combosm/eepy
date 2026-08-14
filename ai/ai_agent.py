@@ -1,8 +1,14 @@
+from __future__ import annotations
+
+from typing import Any
+
 from dotenv import load_dotenv
 from pydantic import BaseModel
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.runnables import Runnable
+from langchain_core.tools import BaseTool
 from langchain_classic.agents import create_tool_calling_agent, AgentExecutor
 from ai.tools import search_tool, wiki_tool
 import os
@@ -16,7 +22,7 @@ class ResearchResponse(BaseModel):
     summary: str
 
 
-def initialise_agent():
+def initialise_agent() -> tuple[Runnable, list[BaseTool]]:
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise ValueError("OPENAI_API_KEY environment variable is not set.")
@@ -44,9 +50,9 @@ def initialise_agent():
     return agent, tools
 
 
-def process_response(raw_response):
+def process_response(raw_response: dict[str, Any]) -> str:
     try:
-        output_str = raw_response.get("output") 
+        output_str = raw_response.get("output", "")
         # parse the output string into the ResearchResponse model and return the summary
         return ResearchResponse.parse_raw(output_str).summary
     except Exception as e:
@@ -60,10 +66,10 @@ def process_response(raw_response):
 ai_response = "AI RESPONSE"
 
 
-_agent_executor = None
+_agent_executor: AgentExecutor | None = None
 
 
-def get_agent_executor():
+def get_agent_executor() -> AgentExecutor:
     """Return the process-wide AgentExecutor, building it on first use."""
     global _agent_executor
     if _agent_executor is None:
@@ -72,22 +78,22 @@ def get_agent_executor():
     return _agent_executor
 
 
-def invoke_agent(agent_executor, query, chat_history):
-    """record one turn in `chat_history` and return the agent's raw response."""
+def invoke_agent(agent_executor: AgentExecutor, query: str, chat_history: list[dict[str, Any]]) -> dict[str, Any]:
+    """record one turn in `chat_history` and return the agent's raw response"""
     chat_history.append({"role": "user", "content": query})
     raw_response = agent_executor.invoke({"query": query, "chat_history": chat_history})
     chat_history.append({"role": "assistant", "content": raw_response.get("output")})
     return raw_response
 
 
-def answer_once(query):
+def answer_once(query: str) -> str:
     """run a single query through the agent and return the parsed answer"""
     global ai_response
     ai_response = process_response(invoke_agent(get_agent_executor(), query, []))
     return ai_response
 
 
-def run_ai(agent, tools):
+def run_ai(agent: Runnable, tools: list[BaseTool]) -> None:
     global ai_response
     # Create an executor to run the agent with the tools
     agent_executor = AgentExecutor(agent=agent, tools=tools)
@@ -117,7 +123,7 @@ def run_ai(agent, tools):
             # Convert the ai_response to speech using text-to-speech
             ai.stt_tts.output_audio(ai_response)
 
-def main():
+def main() -> None:
     agent, tools = initialise_agent()
 
     # Word for activation

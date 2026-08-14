@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import speech_recognition as sr
 import requests
 import tempfile
@@ -11,7 +13,7 @@ load_dotenv()
 
 r = sr.Recognizer()
 
-def record_audio():
+def record_audio() -> str | None:
     """record audio and convert it to text"""
 
     # connect user mic and listen to audio
@@ -33,7 +35,7 @@ source: https://www.youtube.com/watch?v=3BMy5KPa_kQ
 """
 DEFAULT_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"
 
-def get_api_key():
+def get_api_key() -> str:
     api_key = os.getenv("ELEVENLABS_API_KEY")
     if not api_key:
         raise RuntimeError(
@@ -42,7 +44,7 @@ def get_api_key():
         )
     return api_key
 
-def play_audio(file_path):
+def play_audio(file_path: str) -> None:
     """plays audio through pytgame"""
     try:
         pygame.mixer.init()
@@ -57,7 +59,7 @@ def play_audio(file_path):
     except Exception as e:
         print(f"Error playing audio: {str(e)}")
 
-def output_audio(text):
+def output_audio(text: str) -> bool:
     voice_id = DEFAULT_VOICE_ID
 
     # API endpoint for text-to-speech conversion

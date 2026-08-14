@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from flask import Flask, render_template, Response, jsonify
 from vision.camera import generate_frames, data_store, socketio
 import os
@@ -10,11 +12,11 @@ socketio.init_app(app, cors_allowed_origins="*")
 
 # route for video streaming
 @app.route('/video_feed')
-def video_feed():
+def video_feed() -> Response:
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 @app.route('/ai_output')
-def ai_output():
+def ai_output() -> Response:
     # one listen-and-answer turn
     query = record_audio()
     if not query:
@@ -27,15 +29,15 @@ def ai_output():
 
 
 @app.route('/data')
-def get_data():
+def get_data() -> Response:
     return jsonify(data_store)
 
 @app.route('/')
-def index():
+def index() -> str:
     return render_template('index.html')
 
 @app.route('/home')
-def home():
+def home() -> str:
     return render_template('home.html')
 
 if __name__ == "__main__":
