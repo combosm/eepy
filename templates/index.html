@@ -17,10 +17,9 @@
     </div>
     <h1>EEPY</h1>
     <div class="main-container">
-        <!-- Video Stream Section -->
         <div class="video-container">
             <div class="img-container">
-                <img src="{{ url_for('video_feed') }}" alt="Video Stream">
+                <img src="{{ url_for('video_feed') }}" alt="Live driver monitoring camera">
             </div>
             <div class="text-container">
                 <div class="ear-value">
@@ -49,7 +48,7 @@
                     <span id="calibration_reasons">Waiting for data...</span>
                 </div>
             </section>
-            <button class="button" onclick="fetchAIOutput()">Get AI Output</button> <!-- New button to fetch AI output -->
+            <button class="button" type="button" onclick="fetchAIOutput()">Get AI Output</button>
         </div>
     </div>
 
