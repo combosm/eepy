@@ -21,10 +21,11 @@ state only. The separate voice assistant depends on online services and is initi
 the user; it is not connected to fatigue confirmation and must not become a prerequisite
 for a future local alert.
 
-`docs/roadmap.md` is the source of truth for planned changes. In particular, it plans
-calibration, an intervention controller, a camera/inference worker independent of HTTP,
-an explicit `MonitoringSession`, and a non-blocking assistant. None of those boundaries
-should be treated as implemented yet.
+`docs/roadmap.md` is the source of truth for planned changes. Calibration Step 1A's
+per-frame technical-quality gate now exists, but rolling awake-state gating, personal
+profile generation, and calibrated fatigue scoring do not. The intervention controller,
+camera/inference worker independent of HTTP, explicit `MonitoringSession`, and
+non-blocking assistant also remain planned rather than implemented.
 
 ## Repository map
 
@@ -33,6 +34,7 @@ should be treated as implemented yet.
 ├── app.py                         Flask/Socket.IO composition root and HTTP routes
 ├── vision/
 │   ├── camera.py                  Camera ownership, face inference, metrics, streaming
+│   ├── calibration_eligibility.py Per-frame calibration quality classification
 │   ├── drowsiness.py              Deterministic, time-based fatigue state machine
 │   └── benchmark.py               Optional in-memory latency/FPS instrumentation
 ├── ai/
@@ -52,6 +54,8 @@ should be treated as implemented yet.
 │   └── shape_predictor_68_face_landmarks.dat
 │                                     Required dlib model; downloaded, gitignored
 ├── tests/test_drowsiness.py       Unit tests for deterministic fatigue transitions
+├── tests/test_calibration_eligibility.py
+│                                     Unit tests for per-frame calibration quality
 ├── docs/reference/               Landmark-index diagrams and explanation
 ├── docs/roadmap.md               Ordered future architecture milestones
 ├── requirements.txt              Pinned Python dependencies
@@ -70,6 +74,7 @@ flowchart LR
     Flask[app.py: Flask routes]
     Stream[vision.camera.generate_frames]
     Models[OpenCV face DNN + dlib landmarks]
+    Quality[vision.calibration_eligibility]
     Fatigue[vision.drowsiness.FatigueState]
     Bench[vision.benchmark.EepyBenchmark]
     Store[(vision.camera.data_store)]
@@ -81,6 +86,7 @@ flowchart LR
 
     Browser -->|GET /video_feed| Flask --> Stream
     Stream --> Models
+    Stream --> Quality
     Stream --> Fatigue
     Stream --> Bench
     Stream -->|mutates| Store
@@ -166,13 +172,47 @@ For every captured frame, `generate_frames()` performs this sequence:
 4. Keep the largest detection above confidence `0.5` as the presumed driver.
 5. Predict 68 facial landmarks inside that rectangle.
 6. Extract the two six-point eye contours and a six-point subset of the outer mouth.
-7. Calculate EAR and MAR, normalise them, and update `FatigueState`.
-8. Update global UI state, emit it, draw landmarks and (when drowsy) warning text.
-9. JPEG-encode the annotated frame and yield it to the HTTP client.
+7. Calculate EAR and MAR safely and estimate approximate head pose.
+8. Classify calibration frame quality as valid, degraded, or rejected.
+9. For computable EAR/MAR values, normalise them and update `FatigueState` independently
+   of calibration frame quality.
+10. Update global UI state, emit it, draw landmarks and (when drowsy) warning text.
+11. JPEG-encode the annotated frame and yield it to the HTTP client.
 
 The “largest face is the driver” rule is a current heuristic, not identity tracking. It
-can switch between people from frame to frame and does not satisfy the roadmap's eventual
-ambiguous/multiple-driver eligibility checks.
+can switch between people from frame to frame. For the current single-driver prototype,
+Step 1A intentionally uses that same largest-face assumption and does not reject a frame
+solely because additional faces are present.
+
+### Calibration frame quality
+
+`vision.calibration_eligibility.py` implements Roadmap Step 1A as deterministic per-frame
+technical validation. It does not determine whether the driver is awake and does not
+build a personal profile. It returns a `FrameEligibility` containing a quality level and
+explicit reason codes:
+
+- `valid`: the frame meets the preferred technical-quality policy;
+- `degraded`: the measurements remain plausible but conditions are non-ideal;
+- `rejected`: the measurements are structurally unusable for calibration.
+
+Missing faces, invalid boxes, malformed or non-finite landmarks, required landmarks
+outside the image, collapsed feature geometry, impossible vertical landmark ordering,
+invalid EAR/MAR, and extreme pose reject a frame. A relatively small face, clipped face
+box with visible required landmarks, lower confidence, moderate pose, or unavailable pose
+degrades it instead. Both valid and degraded frames may enter the future Step 1B rolling
+gate; rejected measurements may not.
+
+Face occupancy is divided by frame width and height, visible face area is divided by the
+raw detection area, and landmark spans are divided by face width. These dimensionless
+ratios keep quality decisions consistent across camera resolutions. Head pose uses
+OpenCV's `solvePnP` with six existing facial landmarks and a generic 3D face model, then
+converts the rotation to approximate pitch, yaw, and roll in degrees. Pose failure is a
+degraded condition because otherwise valid measurements should not be discarded solely
+because the approximate pose model failed.
+
+The policy boundaries are named initial engineering defaults rather than validated
+production limits. They need representative camera testing. They do not change the
+existing global EAR/MAR fatigue thresholds or closure timing.
 
 ### Facial ratios
 
@@ -189,8 +229,9 @@ the average of the two eye ratios; MAR applies the same geometry to selected out
 points. Values are rounded to three decimals. The landmark ordering and diagrams are
 documented in `docs/reference/README.md`.
 
-There is currently no guard against a zero horizontal span. Degenerate landmarks would
-therefore divide by zero.
+EAR and MAR calculation now rejects non-finite distances and a zero horizontal span. An
+uncomputable ratio rejects the frame for calibration and clears current fatigue evidence
+as if the face measurement were missing, rather than crashing the video generator.
 
 ### Normalisation and fixed safety constants
 
@@ -244,10 +285,17 @@ gap to a potentially different face.
 `vision.camera.data_store` is the current cross-component state container:
 
 ```python
-{"EAR": 0, "MAR": 0, "is_drowsy": False, "ai_response": ""}
+{
+    "EAR": 0,
+    "MAR": 0,
+    "is_drowsy": False,
+    "calibration_frame_quality": "rejected",
+    "calibration_frame_reasons": ["no_face"],
+    "ai_response": "",
+}
 ```
 
-The vision generator mutates the first three fields. `/ai_output` mutates
+The vision generator mutates the first five fields. `/ai_output` mutates
 `ai_response`. `/data` and socket emissions read shallow copies or the dictionary itself.
 There is no lock, session object, ownership protocol, or per-field timestamp.
 
@@ -307,6 +355,10 @@ its latency must not be interpreted as safety response latency.
 timing, mouth corroboration, one-shot transitions, recovery, and missing-face reset. It
 does not currently test ratio calculations, normalisation, camera/model integration,
 Flask routes, assistant behavior, shared-state concurrency, or benchmark calculations.
+`tests/test_calibration_eligibility.py` covers valid, degraded, and rejected frame
+classification; resolution-invariant geometry; low but finite EAR; missing and malformed
+measurements; clipping; relative face size; landmark visibility/order; and pose policy.
+Head-pose estimation itself still requires camera-level integration testing.
 
 CI installs native camera/audio dependencies, compiles Python files, and runs unittest
 discovery on Python 3.13. It does not start the camera pipeline and therefore does not

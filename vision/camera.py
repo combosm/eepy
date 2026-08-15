@@ -12,6 +12,13 @@ from vision.benchmark import (
     BENCHMARK_FRAME_COUNT,
     EepyBenchmark,
 )
+from vision.calibration_eligibility import (
+    FrameEligibility,
+    FrameEligibilityPolicy,
+    HeadPose,
+    assess_frame_eligibility,
+    no_face_eligibility,
+)
 from vision.drowsiness import FatigueState
 
 socketio = SocketIO()
@@ -41,6 +48,10 @@ RIGHT_EYE = [42, 43, 44, 45, 46, 47]
 MOUTH = [48, 50, 52, 54, 56, 58]
 
 FACE_DETECTION_CONFIDENCE_THRESHOLD = 0.5
+CALIBRATION_PREFERRED_FACE_CONFIDENCE = 0.6
+FRAME_ELIGIBILITY_POLICY = FrameEligibilityPolicy(
+    minimum_detection_confidence=CALIBRATION_PREFERRED_FACE_CONFIDENCE,
+)
 
 # Normalisation bounds are centered on the existing binary fatigue thresholds.
 EAR_CLOSED_BOUND = 0.2
@@ -59,26 +70,96 @@ data_store = {
     "EAR": 0,
     "MAR": 0,
     "is_drowsy": False,
+    "calibration_frame_quality": "rejected",
+    "calibration_frame_reasons": ["no_face"],
     "ai_response": "",
 }
 
 
-def eye_aspect_ratio(eye: np.ndarray) -> float:
+def eye_aspect_ratio(eye: np.ndarray) -> float | None:
     """calculate Eye Aspect Ratio (EAR)"""
     A = distance.euclidean(eye[1], eye[5])  # vertical
     B = distance.euclidean(eye[2], eye[4])  # vertical
     C = distance.euclidean(eye[0], eye[3])  # horizontal
+    if not np.isfinite([A, B, C]).all() or C <= 0.0:
+        return None
     ear = (A + B) / (2.0 * C)
+    if not np.isfinite(ear):
+        return None
     return round(ear, 3)
 
 
-def mouth_aspect_ratio(mouth: np.ndarray) -> float:
+def mouth_aspect_ratio(mouth: np.ndarray) -> float | None:
     """calculate Mouth Aspect Ratio (MAR)"""
     A = distance.euclidean(mouth[1], mouth[5])  # vertical
     B = distance.euclidean(mouth[2], mouth[4])  # vertical
     C = distance.euclidean(mouth[0], mouth[3])  # horizontal
+    if not np.isfinite([A, B, C]).all() or C <= 0.0:
+        return None
     mar = (A + B) / (2.0 * C)
+    if not np.isfinite(mar):
+        return None
     return round(mar, 3)
+
+
+HEAD_POSE_LANDMARKS = np.array([30, 8, 36, 45, 48, 54])
+HEAD_POSE_MODEL_POINTS = np.array(
+    [
+        (0.0, 0.0, 0.0),
+        (0.0, -330.0, -65.0),
+        (-225.0, 170.0, -135.0),
+        (225.0, 170.0, -135.0),
+        (-150.0, -150.0, -125.0),
+        (150.0, -150.0, -125.0),
+    ],
+    dtype=np.float64,
+)
+
+
+def estimate_head_pose(
+    landmarks: np.ndarray,
+    frame_width: int,
+    frame_height: int,
+) -> HeadPose | None:
+    """Estimate approximate face orientation from six 2D landmarks."""
+    image_points = landmarks[HEAD_POSE_LANDMARKS].astype(np.float64)
+    focal_length = float(frame_width)
+    camera_matrix = np.array(
+        [
+            [focal_length, 0.0, frame_width / 2.0],
+            [0.0, focal_length, frame_height / 2.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+    distortion = np.zeros((4, 1), dtype=np.float64)
+
+    try:
+        success, rotation_vector, _ = cv2.solvePnP(
+            HEAD_POSE_MODEL_POINTS,
+            image_points,
+            camera_matrix,
+            distortion,
+            flags=cv2.SOLVEPNP_ITERATIVE,
+        )
+        if not success:
+            return None
+        rotation_matrix, _ = cv2.Rodrigues(rotation_vector)
+        angles, *_ = cv2.RQDecomp3x3(rotation_matrix)
+    except cv2.error:
+        return None
+
+    pitch, yaw, roll = (float(angle) for angle in angles)
+    if not np.isfinite([pitch, yaw, roll]).all():
+        return None
+    return HeadPose(pitch, yaw, roll)
+
+
+def _store_frame_eligibility(quality: FrameEligibility) -> None:
+    data_store["calibration_frame_quality"] = quality.quality.value
+    data_store["calibration_frame_reasons"] = [
+        reason.value for reason in quality.reasons
+    ]
 
 
 def clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
@@ -137,20 +218,27 @@ def generate_frames() -> Iterator[bytes]:
                 confidence = detections[0, 0, i, 2]
                 if confidence > FACE_DETECTION_CONFIDENCE_THRESHOLD:
                     box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
-                    (x, y, x1, y1) = box.astype("int")
-                    x, y = max(0, x), max(0, y)
-                    x1, y1 = min(w - 1, x1), min(h - 1, y1)
+                    raw_box = tuple(int(value) for value in box)
+                    raw_x, raw_y, raw_x1, raw_y1 = raw_box
+                    x, y = max(0, raw_x), max(0, raw_y)
+                    x1, y1 = min(w - 1, raw_x1), min(h - 1, raw_y1)
                     area = max(0, x1 - x) * max(0, y1 - y)
                     if area > driver_area:
                         driver_area = area
-                        driver_detection = (x, y, x1, y1)
+                        driver_detection = {
+                            "confidence": float(confidence),
+                            "raw_box": raw_box,
+                            "clipped_box": (x, y, x1, y1),
+                        }
 
             if driver_detection is None:
                 fatigue_state.face_missing()
                 data_store["is_drowsy"] = False
+                _store_frame_eligibility(no_face_eligibility())
                 benchmark.observe_raw_signal(False, benchmark.now())
             else:
-                face_rect = dlib.rectangle(*driver_detection)
+                clipped_face_box = driver_detection["clipped_box"]
+                face_rect = dlib.rectangle(*clipped_face_box)
 
                 # detecting landmarks facial landmarks
                 shape = predictor(gray, face_rect)
@@ -159,43 +247,70 @@ def generate_frames() -> Iterator[bytes]:
                 # EAR calculation for blink detection
                 left_eye = landmarks[LEFT_EYE]
                 right_eye = landmarks[RIGHT_EYE]
-                ear = (eye_aspect_ratio(left_eye) + eye_aspect_ratio(right_eye)) / 2.0
-                ear = round(ear, 3)
-                data_store["EAR"] = ear
+                left_ear = eye_aspect_ratio(left_eye)
+                right_ear = eye_aspect_ratio(right_eye)
+                ear = (
+                    None
+                    if left_ear is None or right_ear is None
+                    else round((left_ear + right_ear) / 2.0, 3)
+                )
 
                 # MAR calculation for yawning detection
                 mouth = landmarks[MOUTH]
                 mar = mouth_aspect_ratio(mouth)
-                mar = round(mar, 3)
-                data_store["MAR"] = mar
 
-                # normalise differently scaled EAR/MAR values before aggregation
-                eye_closure_score = normalize_eye_closure(ear)
-                mouth_open_score = normalize_mouth_opening(mar)
-
-                # start an episode at the first raw eye-closure or yawn signal
-                observed_at = benchmark.now()
-                benchmark.observe_raw_signal(
-                    ear < EAR_DROWSY_THRESHOLD or mar > MAR_DROWSY_THRESHOLD,
-                    observed_at,
+                head_pose = estimate_head_pose(landmarks, w, h)
+                frame_eligibility = assess_frame_eligibility(
+                    frame_width=w,
+                    frame_height=h,
+                    detection_confidence=driver_detection["confidence"],
+                    raw_face_box=driver_detection["raw_box"],
+                    clipped_face_box=clipped_face_box,
+                    landmarks=landmarks,
+                    ear=ear,
+                    mar=mar,
+                    head_pose=head_pose,
+                    policy=FRAME_ELIGIBILITY_POLICY,
                 )
-                fatigue = fatigue_state.update(
-                    eye_severity=eye_closure_score,
-                    eye_closed=ear < EAR_DROWSY_THRESHOLD,
-                    mouth_severity=mouth_open_score,
-                    now=observed_at,
-                )
+                _store_frame_eligibility(frame_eligibility)
 
-                if fatigue.is_drowsy:
-                    cv2.putText(frame, "DROWSY! Wake up!", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 4)
+                fatigue_just_confirmed = False
+                if ear is None or mar is None:
+                    fatigue_state.face_missing()
+                    data_store["is_drowsy"] = False
+                    benchmark.observe_raw_signal(False, benchmark.now())
+                else:
+                    data_store["EAR"] = ear
+                    data_store["MAR"] = mar
 
-                data_store["is_drowsy"] = fatigue.is_drowsy
-                if fatigue.just_confirmed:
-                    benchmark.confirm_fatigue(observed_at)
+                    # normalise differently scaled EAR/MAR values before aggregation
+                    eye_closure_score = normalize_eye_closure(ear)
+                    mouth_open_score = normalize_mouth_opening(mar)
+
+                    # start an episode at the first raw eye-closure or yawn signal
+                    observed_at = benchmark.now()
+                    benchmark.observe_raw_signal(
+                        ear < EAR_DROWSY_THRESHOLD or mar > MAR_DROWSY_THRESHOLD,
+                        observed_at,
+                    )
+                    fatigue = fatigue_state.update(
+                        eye_severity=eye_closure_score,
+                        eye_closed=ear < EAR_DROWSY_THRESHOLD,
+                        mouth_severity=mouth_open_score,
+                        now=observed_at,
+                    )
+
+                    if fatigue.is_drowsy:
+                        cv2.putText(frame, "DROWSY! Wake up!", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 4)
+
+                    data_store["is_drowsy"] = fatigue.is_drowsy
+                    fatigue_just_confirmed = fatigue.just_confirmed
+                    if fatigue.just_confirmed:
+                        benchmark.confirm_fatigue(observed_at)
 
                 # sending data to frontend
                 data = dict(data_store)
-                if fatigue.just_confirmed:
+                if fatigue_just_confirmed:
                     # no real intervention exists yet 
                     benchmark.intervention_invoked(benchmark.now())
                 emit_started_at = benchmark.now()

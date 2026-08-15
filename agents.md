@@ -109,6 +109,8 @@ Do not begin the next roadmap milestone merely because the current one is comple
 
 Current roadmap source: `docs/roadmap.md`.
 
+Before making code changes, verify the active Git branch. Do not make implementation changes directly on `main`; work on `dev` or an explicitly requested feature branch. Never switch branches, commit, push, merge, rebase, or delete branches unless explicitly instructed.
+
 ---
 
 ## Documentation Maintenance
