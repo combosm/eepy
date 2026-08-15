@@ -18,6 +18,8 @@ yawning. There's also a voice assistant you can query on demand from the same pa
 
 ## Installation
 
+EEPY requires Python 3.10 or newer. LangChain 1.x no longer supports Python 3.9.
+
 To install the required dependencies, run:
 
 ```sh

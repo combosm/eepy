@@ -3,8 +3,6 @@ from __future__ import annotations
 from flask import Flask, render_template, Response, jsonify
 from vision.camera import generate_frames, data_store, socketio
 import os
-from ai.ai_agent import answer_once
-from ai.stt_tts import record_audio
 
 app = Flask(__name__)
 socketio.init_app(app, cors_allowed_origins="*")
@@ -17,12 +15,29 @@ def video_feed() -> Response:
 
 @app.route('/ai_output')
 def ai_output() -> Response:
-    # one listen-and-answer turn
-    query = record_audio()
-    if not query:
-        return jsonify({"message": "Sorry, I didn't catch that."})
+    """Run the optional assistant without making it a startup dependency."""
+    try:
+        # These imports intentionally happen only for an assistant request.
+        # Missing AI/audio dependencies must not prevent local monitoring.
+        from ai.ai_agent import answer_once
+        from ai.stt_tts import record_audio
 
-    answer = answer_once(query)
+        query = record_audio()
+        if not query:
+            return jsonify({"message": "Sorry, I didn't catch that."})
+
+        answer = answer_once(query)
+    except Exception:
+        app.logger.exception("Optional AI assistant request failed")
+        return jsonify(
+            {
+                "message": (
+                    "The optional AI assistant is currently unavailable. "
+                    "Local fatigue monitoring is still running."
+                )
+            }
+        ), 503
+
     data_store["ai_response"] = answer
     socketio.emit("update_data", dict(data_store))
     return jsonify({"message": answer})

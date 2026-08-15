@@ -263,6 +263,18 @@ Do not introduce distributed multi-user infrastructure such as Redis without a r
 
 ## 7. Make the AI Assistant Non-Blocking and Resilient
 
+### Status
+
+Partially implemented outside the safety-critical path: Flask/camera startup no longer
+imports optional speech, LangChain, or OpenAI modules, and assistant import/runtime
+failures return an unavailable response without preventing local monitoring. The agent
+uses the LangChain 1.x `create_agent` API and structured output rather than the legacy
+`AgentExecutor` API.
+
+The assistant request itself remains synchronous and blocking. Background execution,
+listening limits, overlap prevention, and deterministic spoken fallback remain future
+work in this step.
+
 ### Goal
 
 Keep optional AI work separate from the safety-critical monitoring loop.

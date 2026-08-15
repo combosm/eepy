@@ -4,15 +4,10 @@ from typing import Any
 
 from dotenv import load_dotenv
 from pydantic import BaseModel
+from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import PydanticOutputParser
-from langchain_core.runnables import Runnable
-from langchain_core.tools import BaseTool
-from langchain_classic.agents import create_tool_calling_agent, AgentExecutor
-from ai.tools import search_tool, wiki_tool
+from ai.tools import search_web, search_wikipedia
 import os
-import ai.stt_tts
 
 load_dotenv()
 
@@ -22,123 +17,111 @@ class ResearchResponse(BaseModel):
     summary: str
 
 
-def initialise_agent() -> tuple[Runnable, list[BaseTool]]:
+SYSTEM_PROMPT = """You are a helpful AI driving assistant.
+Keep responses concise, clear, and suitable for someone who may be driving.
+Use tools when current or reference information is needed.
+Return the requested structured response."""
+
+
+def initialise_agent() -> Any:
+    """Build a LangChain 1.x agent with validated structured output."""
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise ValueError("OPENAI_API_KEY environment variable is not set.")
 
-    # initialise the language model
     llm = ChatOpenAI(model="gpt-4o-mini", api_key=api_key)
-   
-    parser = PydanticOutputParser(pydantic_object=ResearchResponse)
+    tools = [search_web, search_wikipedia]
 
-    # chat prompt template
-    prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", "You are a helpful AI assistant. Keep responses concise.\n{format_instructions}"),
-            ("placeholder", "{chat_history}"),
-            ("human", "{query}"),
-            ("placeholder", "{agent_scratchpad}"),
-        ]
-    ).partial(format_instructions=parser.get_format_instructions())
-
-    # define the tools the AI agent can use
-    tools = [search_tool, wiki_tool]
-
-    # Create the AI agent with the specified LLM, prompt, and tools
-    agent = create_tool_calling_agent(llm=llm, prompt=prompt, tools=tools)
-    return agent, tools
-
-
-def process_response(raw_response: dict[str, Any]) -> str:
-    try:
-        output_str = raw_response.get("output", "")
-        # parse the output string into the ResearchResponse model and return the summary
-        return ResearchResponse.parse_raw(output_str).summary
-    except Exception as e:
-
-        print(f"Error parsing response: {e}")
-        print(f"Raw Response: {raw_response}")
-        
-        # return an error message if parsing fails
-        return "Sorry, I couldn't process the response."
+    return create_agent(
+        model=llm,
+        tools=tools,
+        system_prompt=SYSTEM_PROMPT,
+        response_format=ResearchResponse,
+    )
 
 ai_response = "AI RESPONSE"
 
 
-_agent_executor: AgentExecutor | None = None
+_agent: Any | None = None
 
 
-def get_agent_executor() -> AgentExecutor:
-    """Return the process-wide AgentExecutor, building it on first use."""
-    global _agent_executor
-    if _agent_executor is None:
-        agent, tools = initialise_agent()
-        _agent_executor = AgentExecutor(agent=agent, tools=tools)
-    return _agent_executor
+def get_agent() -> Any:
+    """Return the process-wide agent, building it only on first use."""
+    global _agent
+    if _agent is None:
+        _agent = initialise_agent()
+    return _agent
 
 
-def invoke_agent(agent_executor: AgentExecutor, query: str, chat_history: list[dict[str, Any]]) -> dict[str, Any]:
-    """record one turn in `chat_history` and return the agent's raw response"""
+def invoke_agent(
+    agent: Any,
+    query: str,
+    chat_history: list[dict[str, str]],
+) -> ResearchResponse:
+    """Invoke the LangChain 1.x message-based agent and validate its response."""
     chat_history.append({"role": "user", "content": query})
-    raw_response = agent_executor.invoke({"query": query, "chat_history": chat_history})
-    chat_history.append({"role": "assistant", "content": raw_response.get("output")})
-    return raw_response
+    result = agent.invoke({"messages": list(chat_history)})
+    structured_response = result.get("structured_response")
+    if isinstance(structured_response, ResearchResponse):
+        response = structured_response
+    else:
+        response = ResearchResponse.model_validate(structured_response)
+    chat_history.append({"role": "assistant", "content": response.summary})
+    return response
 
 
 def answer_once(query: str) -> str:
-    """run a single query through the agent and return the parsed answer"""
+    """Run one stateless query and return its validated summary."""
     global ai_response
-    ai_response = process_response(invoke_agent(get_agent_executor(), query, []))
+    ai_response = invoke_agent(get_agent(), query, []).summary
     return ai_response
 
 
-def run_ai(agent: Runnable, tools: list[BaseTool]) -> None:
+def run_ai(agent: Any) -> None:
+    from ai.stt_tts import output_audio, record_audio
+
     global ai_response
-    # Create an executor to run the agent with the tools
-    agent_executor = AgentExecutor(agent=agent, tools=tools)
-    chat_history = []
+    chat_history: list[dict[str, str]] = []
     
     while True:
-        query = ai.stt_tts.record_audio()
+        query = record_audio()
         
         if not query:
             continue
 
         # Record user query and chat history
-        raw_response = invoke_agent(agent_executor, query, chat_history)
-
         # Check if the user wants to exit
         deactivate_words = ["bye", "goodbye", "later"]
         if any(word in query.lower() for word in deactivate_words):
-            ai.stt_tts.output_audio("Goodbye!")
+            output_audio("Goodbye!")
             break
 
-        # Process the response
-        ai_response = process_response(raw_response)
+        ai_response = invoke_agent(agent, query, chat_history).summary
         if ai_response:
             print(f"User Query: {query}")
             print(f"ai_response: {ai_response}")
 
             # Convert the ai_response to speech using text-to-speech
-            ai.stt_tts.output_audio(ai_response)
+            output_audio(ai_response)
 
 def main() -> None:
-    agent, tools = initialise_agent()
+    from ai.stt_tts import output_audio, record_audio
+
+    agent = initialise_agent()
 
     # Word for activation
     activate_words = ["hey", "hello", "hi", "yo", "hey jit"]
 
     while True:    
         print("Listening for activation...")
-        detected_text = ai.stt_tts.record_audio()
+        detected_text = record_audio()
         print(f"Detected text: {detected_text}")  
 
         # Check if the wake word is detected
         if detected_text and any(activate_word in detected_text.lower() for activate_word in activate_words):
-            ai.stt_tts.output_audio("Hey!")
+            output_audio("Hey!")
             # Activate the AI
-            run_ai(agent, tools)  
+            run_ai(agent)
         else:
             print("Activate word not detected. Please try again.")
 

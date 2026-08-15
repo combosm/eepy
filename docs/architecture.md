@@ -38,7 +38,7 @@ non-blocking assistant also remain planned rather than implemented.
 │   ├── drowsiness.py              Deterministic, time-based fatigue state machine
 │   └── benchmark.py               Optional in-memory latency/FPS instrumentation
 ├── ai/
-│   ├── ai_agent.py                LangChain/OpenAI agent lifecycle and response parsing
+│   ├── ai_agent.py                LangChain 1.x/OpenAI agent lifecycle
 │   ├── tools.py                   DuckDuckGo and Wikipedia agent tools
 │   └── stt_tts.py                 Microphone STT and ElevenLabs/pygame TTS adapters
 ├── templates/
@@ -106,9 +106,10 @@ There are two mostly separate runtime paths which meet at `data_store` and the b
 
 - The local vision path runs inside the `/video_feed` response generator. It captures
   frames, performs inference, updates fatigue state, emits metrics, and yields JPEGs.
-- The optional assistant path runs synchronously inside `/ai_output`. It records from the
-  microphone, calls online speech recognition and an OpenAI-backed agent (which may call
-  web tools), stores the answer, and returns JSON.
+- The optional assistant path is loaded lazily and runs synchronously inside `/ai_output`.
+  It records from the microphone, calls online speech recognition and an OpenAI-backed
+  agent (which may call web tools), stores the answer, and returns JSON. Import, speech,
+  tool, and model failures return HTTP 503 without preventing local monitoring startup.
 
 No assistant function is called by the fatigue engine. `output_audio()` exists for the
 standalone command-line assistant loop in `ai/ai_agent.py`, but the Flask `/ai_output`
@@ -132,14 +133,19 @@ paths are relative to the process working directory, not to `camera.py`.
 server is started through `socketio.run(...)` only when `app.py` is executed directly.
 `FLASK_DEBUG` controls debug mode and defaults off.
 
+`app.py` deliberately does not import `ai.ai_agent` or `ai.stt_tts` at startup. The
+`/ai_output` route imports them only when the optional assistant is requested, so a
+missing LangChain/audio dependency, API key, or online service cannot prevent the Flask
+camera application from starting.
+
 Important lifetimes:
 
 - `face_net`, `predictor`, `socketio`, and `data_store` are process-wide globals.
 - `FatigueState`, `EepyBenchmark`, and `cv2.VideoCapture(0)` are created once per call to
   `generate_frames()`—in practice, once per `/video_feed` client connection.
-- The LangChain `AgentExecutor` is lazily constructed on the first assistant request and
-  cached process-wide. `answer_once()` nevertheless supplies a new empty chat history for
-  every request, so web requests do not form a conversation.
+- The LangChain 1.x compiled agent graph is constructed on the first successful assistant
+  request and cached process-wide. `answer_once()` nevertheless supplies a new empty
+  message history for every request, so web requests do not form a conversation.
 - The speech-recognition `Recognizer` is process-wide.
 
 ## HTTP and browser flow
@@ -324,17 +330,19 @@ Pressing “Get AI Output” starts this synchronous chain:
 browser -> /ai_output
         -> SpeechRecognition microphone capture
         -> Google speech recognition
-        -> cached LangChain AgentExecutor
+        -> cached LangChain 1.x compiled agent
         -> ChatOpenAI (gpt-4o-mini)
         -> optional DuckDuckGo/Wikipedia tools
         -> Pydantic ResearchResponse parsing
         -> data_store + Socket.IO + JSON response
 ```
 
-`initialise_agent()` requires `OPENAI_API_KEY`. The prompt requires JSON matching
-`ResearchResponse(topic, summary)`; `process_response()` returns only `summary` and falls
-back to a fixed apology if parsing fails. Search and Wikipedia tools are instantiated at
-module import. This whole branch is optional enhancement behavior and internet-dependent.
+`initialise_agent()` requires `OPENAI_API_KEY`. It uses LangChain 1.x `create_agent` with
+`ResearchResponse(topic, summary)` as its structured response schema. LangChain selects
+the supported structured-output strategy and returns the validated Pydantic object in the
+agent state's `structured_response` field; EEPY returns its `summary`. DuckDuckGo and
+Wikipedia are exposed as typed Python tool functions. This whole branch is optional,
+internet-dependent enhancement behavior.
 
 `ai/stt_tts.py` also provides ElevenLabs speech synthesis and local playback through
 pygame. It requires `ELEVENLABS_API_KEY`, writes a temporary MP3, plays it synchronously,
@@ -375,7 +383,7 @@ require the downloaded landmark model during tests.
 | Landmark prediction/encoding error | Exception escapes generator; `finally` releases camera | Monitoring stream stops |
 | Socket.IO/CDN unavailable | Three-second `/data` polling still updates the page | Video and detection can continue, but UI is delayed |
 | Speech not recognised | `/ai_output` returns a fixed apology | Vision is logically independent, subject to server resource contention |
-| OpenAI/tool/network error | Usually propagates as an HTTP failure; parse errors use a fixed apology | Must never be used for the initial local warning |
+| Assistant import, speech, OpenAI, tool, or network error | `/ai_output` logs the failure and returns HTTP 503; local monitoring continues | Must never be used for the initial local warning |
 | ElevenLabs/playback error | Logs error and returns false | No local spoken fallback exists |
 
 ## Safe extension points and dependency direction
