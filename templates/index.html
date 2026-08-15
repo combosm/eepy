@@ -39,6 +39,16 @@
             <div class="drowsy-status">
                 <span id="drowsy_value">Drowsiness Status: Waiting for data...</span>
             </div>
+            <section class="calibration-diagnostic" aria-labelledby="calibration-quality-label" aria-live="polite">
+                <div class="calibration-quality-row">
+                    <span id="calibration-quality-label">Calibration frame quality:</span>
+                    <span id="calibration_quality" class="calibration-quality calibration-quality--unknown">Waiting for data...</span>
+                </div>
+                <div class="calibration-reasons">
+                    <span>Details:</span>
+                    <span id="calibration_reasons">Waiting for data...</span>
+                </div>
+            </section>
             <button class="button" onclick="fetchAIOutput()">Get AI Output</button> <!-- New button to fetch AI output -->
         </div>
     </div>

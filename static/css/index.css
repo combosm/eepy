@@ -91,6 +91,60 @@ h1 {
     margin-top: 10px;
 }
 
+.calibration-diagnostic {
+    box-sizing: border-box;
+    width: min(100%, 700px);
+    margin-top: 12px;
+    padding: 12px 16px;
+    border: 2px solid #850B4E;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.88);
+    color: #2d1630;
+    font-family: 'Poppins', sans-serif;
+    text-align: left;
+}
+
+.calibration-quality-row,
+.calibration-reasons {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+}
+
+.calibration-quality-row {
+    font-weight: 700;
+}
+
+.calibration-reasons {
+    margin-top: 6px;
+    font-size: 14px;
+}
+
+.calibration-quality {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 999px;
+    color: #fff;
+    font-size: 14px;
+    letter-spacing: 0.04em;
+}
+
+.calibration-quality--valid {
+    background: #237a3b;
+}
+
+.calibration-quality--degraded {
+    background: #9a6700;
+}
+
+.calibration-quality--rejected {
+    background: #b42318;
+}
+
+.calibration-quality--unknown {
+    background: #666;
+}
+
 .button {
     padding: 12px 28px;
     margin: 15px 2px;
