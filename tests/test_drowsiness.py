@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import unittest
 
+import numpy as np
+
 from vision.drowsiness import FatigueState
 
 
@@ -87,6 +89,20 @@ class FatigueStateTests(unittest.TestCase):
         self.assertFalse(new_face.is_drowsy)
         self.assertEqual(new_face.eye_evidence, 0.0)
         self.assertEqual(new_face.mouth_evidence, 0.0)
+
+    def test_numpy_inputs_produce_json_serializable_boolean_state(self) -> None:
+        state = make_state()
+
+        state.update(np.float64(1.0), np.bool_(True), np.float64(0.0), 0.0)
+        update = state.update(
+            np.float64(1.0),
+            np.bool_(True),
+            np.float64(0.0),
+            1.5,
+        )
+
+        self.assertIs(type(update.is_drowsy), bool)
+        self.assertIs(type(update.just_confirmed), bool)
 
 
 if __name__ == "__main__":

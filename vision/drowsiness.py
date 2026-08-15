@@ -80,7 +80,9 @@ class FatigueState:
             self.eye_weight * eye_evidence
             + self.mouth_weight * mouth_evidence
         )
-        is_drowsy = eye_closed and combined_evidence >= self.eye_weight
+        # Callers may supply NumPy scalar measurements. Coerce the result so
+        # monitoring state remains safe to expose through Flask's JSON API.
+        is_drowsy = bool(eye_closed and combined_evidence >= self.eye_weight)
         just_confirmed = is_drowsy and not self.is_drowsy
         just_recovered = self.is_drowsy and not is_drowsy
         self.is_drowsy = is_drowsy

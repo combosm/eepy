@@ -86,7 +86,7 @@ def eye_aspect_ratio(eye: np.ndarray) -> float | None:
     ear = (A + B) / (2.0 * C)
     if not np.isfinite(ear):
         return None
-    return round(ear, 3)
+    return round(float(ear), 3)
 
 
 def mouth_aspect_ratio(mouth: np.ndarray) -> float | None:
@@ -99,7 +99,7 @@ def mouth_aspect_ratio(mouth: np.ndarray) -> float | None:
     mar = (A + B) / (2.0 * C)
     if not np.isfinite(mar):
         return None
-    return round(mar, 3)
+    return round(float(mar), 3)
 
 
 HEAD_POSE_LANDMARKS = np.array([30, 8, 36, 45, 48, 54])
