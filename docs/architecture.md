@@ -23,9 +23,9 @@ by the user; it is not connected to fatigue confirmation.
 
 `docs/roadmap.md` is the source of truth for planned changes. Calibration Steps 1A and
 1B now provide per-frame technical-quality classification and rolling awake-state
-eligibility, but personal profile generation and calibrated fatigue scoring do not. The
-camera/inference worker independent of HTTP, explicit `MonitoringSession`, and
-non-blocking assistant also remain planned rather than implemented.
+eligibility, but personal profile generation and calibrated fatigue scoring do not. One
+application-owned camera/inference worker now runs independently of HTTP stream clients.
+An explicit `MonitoringSession` and non-blocking assistant remain planned.
 
 ## Repository map
 
@@ -39,6 +39,7 @@ non-blocking assistant also remain planned rather than implemented.
 │   ├── drowsiness.py              Deterministic, time-based fatigue state machine
 │   ├── intervention.py            Fatigue episodes, cooldowns, and escalation
 │   ├── local_alarm.py             Offline non-blocking speaker alarm adapter
+│   ├── monitoring_worker.py       Single camera owner and latest-frame publisher
 │   └── benchmark.py               Optional in-memory latency/FPS instrumentation
 ├── ai/
 │   ├── ai_agent.py                LangChain 1.x/OpenAI agent lifecycle
@@ -63,6 +64,7 @@ non-blocking assistant also remain planned rather than implemented.
 ├── tests/test_intervention.py         Unit tests for episode/controller transitions
 ├── tests/test_local_alarm.py          Unit tests for alarm success and fallback
 ├── tests/test_benchmark.py            Unit tests for intervention latency lifecycle
+├── tests/test_monitoring_worker.py    Worker ownership/retry/publication unit tests
 ├── docs/reference/               Landmark-index diagrams and explanation
 ├── docs/roadmap.md               Ordered future architecture milestones
 ├── requirements.txt              Pinned Python dependencies
@@ -80,6 +82,8 @@ flowchart LR
     Browser[Browser: index.html + index.js]
     Flask[app.py: Flask routes]
     Stream[vision.camera.generate_frames]
+    Worker[vision.monitoring_worker.MonitoringWorker]
+    Pipeline[vision.camera.CameraPipeline]
     Models[OpenCV face DNN + dlib landmarks]
     Quality[vision.calibration_eligibility]
     AwakeGate[vision.awake_state_gate]
@@ -94,20 +98,24 @@ flowchart LR
     Tools[DuckDuckGo / Wikipedia]
     OpenAI[OpenAI]
 
-    Browser -->|GET /video_feed| Flask --> Stream
-    Stream --> Models
-    Stream --> Quality
-    Stream --> Fatigue
+    Flask -->|start once| Worker
+    Worker -->|capture frame once| Pipeline
+    Pipeline --> Models
+    Pipeline --> Quality
+    Pipeline --> Fatigue
     Quality --> AwakeGate
     Fatigue --> AwakeGate
     Fatigue --> Intervention
     Intervention --> Alarm
     Intervention --> Store
     AwakeGate --> Store
-    Stream --> Bench
-    Stream -->|mutates| Store
-    Stream -->|JPEG multipart response| Browser
-    Stream -->|update_data event| Socket --> Browser
+    Pipeline --> Bench
+    Pipeline -->|mutates| Store
+    Pipeline -->|update_data event| Socket --> Browser
+    Pipeline -->|latest JPEG| Worker
+    Browser -->|GET /video_feed| Flask --> Stream
+    Stream -->|subscribe| Worker
+    Worker -->|shared multipart JPEG| Browser
     Browser -->|GET /data every 3 s| Flask --> Store
     Browser -->|GET /ai_output| Flask --> STT
     STT -->|recognized text| Agent
@@ -120,9 +128,12 @@ flowchart LR
 
 There are two mostly separate runtime paths which meet at `data_store` and the browser:
 
-- The local vision path runs inside the `/video_feed` response generator. It captures
-  frames, performs inference, updates fatigue state, runs the local intervention
-  controller, emits metrics, and yields JPEGs.
+- The local vision path runs in one daemon monitoring thread owned by the application. It
+  captures frames, performs inference, updates fatigue/intervention state, emits metrics,
+  and publishes the newest JPEG even when no `/video_feed` client is connected.
+- The `/video_feed` path only waits for a newer published sequence and yields that shared
+  JPEG. It never opens the webcam or performs inference. Slow clients skip intermediate
+  frames instead of accumulating a stale queue.
 - The optional assistant path is loaded lazily and runs synchronously inside `/ai_output`.
   It records from the microphone, calls online speech recognition and an OpenAI-backed
   agent (which may call web tools), stores the answer, and returns JSON. Import, speech,
@@ -146,9 +157,11 @@ These are import-time side effects, so missing model files, an unexpected workin
 directory, or incompatible native libraries prevent the Flask app from importing. Model
 paths are relative to the process working directory, not to `camera.py`.
 
-`app.py` then attaches the imported `SocketIO` object to the Flask app. The development
-server is started through `socketio.run(...)` only when `app.py` is executed directly.
-`FLASK_DEBUG` controls debug mode and defaults off.
+`app.py` then attaches the imported `SocketIO` object to the Flask app. Direct execution
+starts the monitoring worker before `socketio.run(...)`; debug mode starts it only in the
+Werkzeug serving child so the reloader parent does not compete for camera index `0`.
+WSGI-style imports start it idempotently on the first request. An `atexit` hook requests
+worker shutdown. `FLASK_DEBUG` controls debug mode and defaults off.
 
 `app.py` deliberately does not import `ai.ai_agent` or `ai.stt_tts` at startup. The
 `/ai_output` route imports them only when the optional assistant is requested, so a
@@ -157,10 +170,13 @@ camera application from starting.
 
 Important lifetimes:
 
-- `face_net`, `predictor`, `socketio`, and `data_store` are process-wide globals.
-- `FatigueState`, `AwakeStateGate`, `InterventionController`, `LocalAlarm`,
-  `EepyBenchmark`, and `cv2.VideoCapture(0)` are created once per call to
-  `generate_frames()`—in practice, once per `/video_feed` client connection.
+- `face_net`, `predictor`, `socketio`, `data_store`, and `monitoring_worker` are
+  process-wide globals.
+- `CameraPipeline` creates one `FatigueState`, `AwakeStateGate`,
+  `InterventionController`, `LocalAlarm`, and `EepyBenchmark` when the worker thread
+  starts. Their histories survive browser connections and disconnections.
+- The worker owns the sole `cv2.VideoCapture(0)` handle. It releases and retries the
+  handle after open/read failure and releases it on shutdown.
 - The LangChain 1.x compiled agent graph is constructed on the first successful assistant
   request and cached process-wide. `answer_once()` nevertheless supplies a new empty
   message history for every request, so web requests do not form a conversation.
@@ -172,12 +188,12 @@ Important lifetimes:
 |---|---|---|
 | `/` | Renders `templates/index.html` | Camera dashboard |
 | `/home` | Renders `templates/home.html` | Static information page |
-| `/video_feed` | Streams multipart JPEG frames from `generate_frames()` | `<img>` on camera page |
+| `/video_feed` | Subscribes to the worker's latest multipart JPEG snapshots | `<img>` on camera page |
 | `/data` | Returns a JSON snapshot of global `data_store` | Three-second polling fallback/update |
 | `/ai_output` | Performs one blocking listen-and-answer operation | Dashboard button |
 
-The dashboard receives state in two ways. `generate_frames()` emits the Socket.IO
-`update_data` event on processed face frames, while `index.js` also fetches `/data` every
+The dashboard receives state in two ways. `CameraPipeline` emits the Socket.IO
+`update_data` event on every processed frame, while `index.js` also fetches `/data` every
 three seconds. Both update the same EAR, MAR, drowsiness, and AI-response DOM elements.
 Socket.IO's browser client is loaded from a CDN; polling still updates metrics if that CDN
 or the socket connection is unavailable, provided the rest of the page is running.
@@ -188,7 +204,7 @@ from a different frame than the visible image.
 
 ## Vision and fatigue pipeline
 
-For every captured frame, `generate_frames()` performs this sequence:
+For every captured frame, the monitoring worker calls `CameraPipeline.process()` once:
 
 1. Capture one BGR frame from webcam index `0`.
 2. Convert it to grayscale for dlib landmark prediction.
@@ -204,7 +220,7 @@ For every captured frame, `generate_frames()` performs this sequence:
 11. Feed fatigue state into the intervention controller and immediately start any local
     speaker alarm action before emitting browser state.
 12. Update global UI state, emit it, draw landmarks and (when drowsy) warning text.
-13. JPEG-encode the annotated frame and yield it to the HTTP client.
+13. JPEG-encode the annotated frame and publish it as the worker's sole latest snapshot.
 
 The “largest face is the driver” rule is a current heuristic, not identity tracking. It
 can switch between people from frame to frame. For the current single-driver prototype,
@@ -375,6 +391,8 @@ also attempted as a last resort, but it is not considered successful alarm deliv
     "intervention_message": "",
     "local_alarm_available": False,
     "local_alarm_error": None,
+    "camera_running": False,
+    "camera_error": None,
     "ai_response": "",
 }
 ```
@@ -386,21 +404,21 @@ There is no lock, session object, ownership protocol, or per-field timestamp.
 
 Consequences of the current design:
 
-- Multiple browser stream connections open multiple handles to webcam `0`, run duplicate
-  inference, maintain different fatigue/intervention histories, may request overlapping
-  alarms, and race to update one store.
-- A stream disconnect destroys that connection's fatigue and benchmark state and releases
-  its camera handle; monitoring does not continue independently of the dashboard.
+- Multiple browser connections now share one camera, inference pipeline, state history,
+  and latest JPEG inside a process. A slow consumer observes the newest sequence rather
+  than forcing the worker to queue or reprocess older frames.
+- Disconnecting every stream client no longer stops capture, inference, or intervention.
+- The worker is idempotent within one process, but multiple server processes would still
+  create independent workers and compete for camera index `0`. EEPY remains a one-process
+  edge application.
 - Depending on the server's threading/worker configuration, assistant and vision updates
   can interleave. Individual dictionary operations are not a coherent multi-field snapshot.
-- Multiple processes would each have separate camera handles and separate stores; this
-  architecture assumes one local process and does not support horizontal scaling.
 - The blocking microphone/network assistant request can occupy a request worker
   indefinitely because listening and HTTP calls currently have no explicit timeouts.
 
-The roadmap's capture worker plus `MonitoringSession` is intended to replace these
-implicit ownership relationships. Do not introduce distributed state merely to work
-around this prototype; the target remains one active driver/device session.
+The next roadmap step replaces the remaining global dictionary with a thread-safe
+`MonitoringSession`. Do not introduce distributed state merely to work around this
+prototype; the target remains one active driver/device session.
 
 ## Optional assistant path
 
@@ -432,8 +450,8 @@ fallback in that optional assistant path. Fatigue alerts use the separate offlin
 
 ## Benchmarking and tests
 
-Setting `EEPY_BENCHMARK_ENABLED` to a truthy value enables an `EepyBenchmark` per video
-stream. `EEPY_BENCHMARK_FRAME_COUNT` controls when it prints a one-time summary (default
+Setting `EEPY_BENCHMARK_ENABLED` to a truthy value enables one `EepyBenchmark` in the
+worker-owned pipeline. `EEPY_BENCHMARK_FRAME_COUNT` controls when it prints a one-time summary (default
 500 frames). It records processing latency, complete frame-loop latency, FPS, raw-signal
 to confirmation, and confirmation to successful local alarm delivery. Failed speaker
 attempts are not counted as delivery.
@@ -461,6 +479,11 @@ requiring physical audio hardware.
 `tests/test_benchmark.py` verifies successful local delivery timing and ensures an episode
 that recovers after failed audio does not prevent the next episode being benchmarked.
 
+`tests/test_monitoring_worker.py` uses injected fake capture and processing adapters to
+cover idempotent startup, one capture owner, latest-frame replacement, shared consumer
+snapshots, camera-open retry, processing-error containment, multipart output, and clean
+capture release without requiring webcam hardware.
+
 CI installs native camera/audio dependencies, compiles Python files, and runs unittest
 discovery on Python 3.13. It does not start the camera pipeline and therefore does not
 require the downloaded landmark model during tests.
@@ -470,10 +493,10 @@ require the downloaded landmark model during tests.
 | Failure | Current behavior | Safety implication |
 |---|---|---|
 | Landmark model absent or model path wrong | App import fails | Monitoring never starts |
-| Webcam cannot open/read | Stream ends and camera is released | No persistent local fault alert |
+| Webcam cannot open/read | Worker exposes the error, releases the handle, and retries every second | Monitoring remains alive but cannot detect new fatigue until capture recovers |
 | No face detected | Fatigue history clears and `is_drowsy` becomes false; an already-active intervention episode stays open | Recovery is not falsely inferred, but loss of driver visibility has no separate alert |
-| No face after prior measurements | EAR/MAR remain at their previous values; no socket event is emitted on that branch | Dashboard can show stale measurements until polling, with no visibility flag |
-| Landmark prediction/encoding error | Exception escapes generator; `finally` releases camera | Monitoring stream stops |
+| No face after prior measurements | EAR/MAR remain at their previous values, while rejected-frame, fatigue, and intervention state is emitted | Ratios can look stale, but absence does not falsely close an active intervention episode |
+| Landmark prediction/encoding error | Worker exposes the error, drops that frame, and continues | A transient failure loses one observation rather than terminating monitoring |
 | Local mixer cannot initialise or allocate a channel | Error is exposed; terminal bell is attempted; visual warning remains active | Audible delivery is not guaranteed and is not counted by the benchmark |
 | Socket.IO/CDN unavailable | Three-second `/data` polling still updates the page | Video and detection can continue, but UI is delayed |
 | Speech not recognised | `/ai_output` returns a fixed apology | Vision is logically independent, subject to server resource contention |
@@ -498,8 +521,8 @@ In practical terms:
 
 - Keep deterministic fatigue, calibration, and intervention decisions free of Flask,
   Socket.IO, OpenAI, and speech-recognition imports.
-- Give camera capture one application-owned lifecycle and publish the latest processed
-  frame/state; HTTP clients should consume it rather than create it.
+- Preserve the worker's single application-owned camera lifecycle and latest-frame
+  publication boundary; HTTP clients must remain consumers rather than owners.
 - Prefer latest-frame semantics over a backlog, because stale inference is unsafe and adds
   latency.
 - Put calibration, metrics, episode state, intervention state, and assistant state behind

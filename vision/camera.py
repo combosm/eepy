@@ -28,6 +28,7 @@ from vision.intervention import (
     InterventionUpdate,
 )
 from vision.local_alarm import LocalAlarm
+from vision.monitoring_worker import MonitoringWorker
 
 socketio = SocketIO()
 ### TODO
@@ -37,8 +38,6 @@ socketio = SocketIO()
 #   (e.g. while laughing) - ties into emotion detection below.
 # - Emotion detection: laughing can close the eyes and read as drowsiness; needs to be told
 #   apart from real fatigue.
-# - Wire up an actual intervention (voice prompt) when drowsiness is confirmed. Today
-#   confirmation only updates state and benchmark data.
 # - Validate the EAR/MAR normalization bounds against a wider range of eyes than they were
 #   tuned on.
 
@@ -93,6 +92,8 @@ data_store = {
     "intervention_message": "",
     "local_alarm_available": False,
     "local_alarm_error": None,
+    "camera_running": False,
+    "camera_error": None,
     "ai_response": "",
 }
 
@@ -249,207 +250,253 @@ def normalize_mouth_opening(mar: float) -> float:
     return clamp(score)
 
 
-def generate_frames() -> Iterator[bytes]:
-    cap = cv2.VideoCapture(0)
-    benchmark = EepyBenchmark(BENCHMARK_ENABLED, BENCHMARK_FRAME_COUNT)
-    fatigue_state = FatigueState(
-        eye_grace_seconds=EYE_CLOSURE_GRACE_SECONDS,
-        eye_ramp_seconds=EYE_CLOSURE_RAMP_SECONDS,
-        mouth_window_seconds=MOUTH_EVIDENCE_WINDOW_SECONDS,
-        eye_weight=EYE_SCORE_WEIGHT,
-        mouth_weight=MOUTH_SCORE_WEIGHT,
-    )
-    awake_state_gate = AwakeStateGate()
-    intervention_controller = InterventionController(
-        InterventionPolicy(
-            repeat_cooldown_seconds=INTERVENTION_REPEAT_COOLDOWN_SECONDS,
+class CameraPipeline:
+    """Stateful inference pipeline owned by the single monitoring worker."""
+
+    def __init__(self) -> None:
+        self.benchmark = EepyBenchmark(BENCHMARK_ENABLED, BENCHMARK_FRAME_COUNT)
+        self.fatigue_state = FatigueState(
+            eye_grace_seconds=EYE_CLOSURE_GRACE_SECONDS,
+            eye_ramp_seconds=EYE_CLOSURE_RAMP_SECONDS,
+            mouth_window_seconds=MOUTH_EVIDENCE_WINDOW_SECONDS,
+            eye_weight=EYE_SCORE_WEIGHT,
+            mouth_weight=MOUTH_SCORE_WEIGHT,
         )
-    )
-    local_alarm = LocalAlarm()
-    data_store["local_alarm_available"] = local_alarm.available
-    data_store["local_alarm_error"] = local_alarm.error
-    
-    try:
-        while True:
-            # end-to-end timing includes blocking capture and JPEG encoding
-            loop_started_at = benchmark.now()
-            success, frame = cap.read()
-            if not success:
-                break
+        self.awake_state_gate = AwakeStateGate()
+        self.intervention_controller = InterventionController(
+            InterventionPolicy(
+                repeat_cooldown_seconds=INTERVENTION_REPEAT_COOLDOWN_SECONDS,
+            )
+        )
+        self.local_alarm = LocalAlarm()
+        data_store["local_alarm_available"] = self.local_alarm.available
+        data_store["local_alarm_error"] = self.local_alarm.error
 
-            # processing-only timing excludes camera capture and stream-consumer waits
-            processing_started_at = benchmark.now()
-            non_vision_seconds = 0.0
+    def source_unavailable(self, observed_at: float) -> None:
+        """Preserve active interventions while camera recovery is uncertain."""
+        self.fatigue_state.face_missing()
+        data_store["is_drowsy"] = False
+        frame_eligibility = no_face_eligibility()
+        _store_frame_eligibility(frame_eligibility)
+        _store_awake_gate(
+            self.awake_state_gate.observe(
+                frame=frame_eligibility,
+                ear=None,
+                mar=None,
+                fatigue_suspected=False,
+                now=observed_at,
+            )
+        )
+        intervention = self.intervention_controller.update(
+            is_drowsy=None,
+            now=observed_at,
+        )
+        local_alarm_delivered = _store_intervention(
+            intervention,
+            self.local_alarm,
+        )
+        if local_alarm_delivered:
+            self.benchmark.intervention_delivered(self.benchmark.now())
+        self.benchmark.observe_raw_signal(False, observed_at)
+        socketio.emit("update_data", dict(data_store))
 
-            # convert frame to grayscale
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            h, w = frame.shape[:2]
+    def process(self, frame: np.ndarray, loop_started_at: float) -> bytes:
+        """Run inference once, update local state, and return one annotated JPEG."""
+        processing_started_at = self.benchmark.now()
+        non_vision_seconds = 0.0
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        h, w = frame.shape[:2]
 
-            # detecting face
-            blob = cv2.dnn.blobFromImage(frame, 1.0, (300, 300), (104, 177, 123), False, False)
-            face_net.setInput(blob)
-            detections = face_net.forward()
+        blob = cv2.dnn.blobFromImage(
+            frame,
+            1.0,
+            (300, 300),
+            (104, 177, 123),
+            False,
+            False,
+        )
+        face_net.setInput(blob)
+        detections = face_net.forward()
 
-            # Track one driver face per frame. The largest detected face is the
-            # clearest available proxy for the closest/primary driver.
-            driver_detection = None
-            driver_area = 0
-            for i in range(detections.shape[2]):
-                confidence = detections[0, 0, i, 2]
-                if confidence > FACE_DETECTION_CONFIDENCE_THRESHOLD:
-                    box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
-                    raw_box = tuple(int(value) for value in box)
-                    raw_x, raw_y, raw_x1, raw_y1 = raw_box
-                    x, y = max(0, raw_x), max(0, raw_y)
-                    x1, y1 = min(w - 1, raw_x1), min(h - 1, raw_y1)
-                    area = max(0, x1 - x) * max(0, y1 - y)
-                    if area > driver_area:
-                        driver_area = area
-                        driver_detection = {
-                            "confidence": float(confidence),
-                            "raw_box": raw_box,
-                            "clipped_box": (x, y, x1, y1),
-                        }
+        driver_detection = None
+        driver_area = 0
+        for index in range(detections.shape[2]):
+            confidence = detections[0, 0, index, 2]
+            if confidence <= FACE_DETECTION_CONFIDENCE_THRESHOLD:
+                continue
+            box = detections[0, 0, index, 3:7] * np.array([w, h, w, h])
+            raw_box = tuple(int(value) for value in box)
+            raw_x, raw_y, raw_x1, raw_y1 = raw_box
+            x, y = max(0, raw_x), max(0, raw_y)
+            x1, y1 = min(w - 1, raw_x1), min(h - 1, raw_y1)
+            area = max(0, x1 - x) * max(0, y1 - y)
+            if area > driver_area:
+                driver_area = area
+                driver_detection = {
+                    "confidence": float(confidence),
+                    "raw_box": raw_box,
+                    "clipped_box": (x, y, x1, y1),
+                }
 
-            if driver_detection is None:
-                fatigue_state.face_missing()
-                data_store["is_drowsy"] = False
-                frame_eligibility = no_face_eligibility()
-                _store_frame_eligibility(frame_eligibility)
-                observed_at = benchmark.now()
-                _store_awake_gate(
-                    awake_state_gate.observe(
-                        frame=frame_eligibility,
-                        ear=None,
-                        mar=None,
-                        fatigue_suspected=False,
-                        now=observed_at,
-                    )
-                )
-                intervention = intervention_controller.update(
-                    is_drowsy=None,
+        landmarks = None
+        if driver_detection is None:
+            self.fatigue_state.face_missing()
+            data_store["is_drowsy"] = False
+            frame_eligibility = no_face_eligibility()
+            _store_frame_eligibility(frame_eligibility)
+            observed_at = self.benchmark.now()
+            _store_awake_gate(
+                self.awake_state_gate.observe(
+                    frame=frame_eligibility,
+                    ear=None,
+                    mar=None,
+                    fatigue_suspected=False,
                     now=observed_at,
                 )
-                _store_intervention(intervention, local_alarm)
-                benchmark.observe_raw_signal(False, observed_at)
+            )
+            intervention = self.intervention_controller.update(
+                is_drowsy=None,
+                now=observed_at,
+            )
+            self.benchmark.observe_raw_signal(False, observed_at)
+        else:
+            clipped_face_box = driver_detection["clipped_box"]
+            face_rect = dlib.rectangle(*clipped_face_box)
+            shape = predictor(gray, face_rect)
+            landmarks = np.array(
+                [[shape.part(i).x, shape.part(i).y] for i in range(68)]
+            )
+
+            left_ear = eye_aspect_ratio(landmarks[LEFT_EYE])
+            right_ear = eye_aspect_ratio(landmarks[RIGHT_EYE])
+            ear = (
+                None
+                if left_ear is None or right_ear is None
+                else round((left_ear + right_ear) / 2.0, 3)
+            )
+            mar = mouth_aspect_ratio(landmarks[MOUTH])
+            frame_eligibility = assess_frame_eligibility(
+                frame_width=w,
+                frame_height=h,
+                detection_confidence=driver_detection["confidence"],
+                raw_face_box=driver_detection["raw_box"],
+                clipped_face_box=clipped_face_box,
+                landmarks=landmarks,
+                ear=ear,
+                mar=mar,
+                head_pose=estimate_head_pose(landmarks, w, h),
+                policy=FRAME_ELIGIBILITY_POLICY,
+            )
+            _store_frame_eligibility(frame_eligibility)
+
+            intervention_observation: bool | None = None
+            if ear is None or mar is None:
+                self.fatigue_state.face_missing()
+                data_store["is_drowsy"] = False
+                observed_at = self.benchmark.now()
+                self.benchmark.observe_raw_signal(False, observed_at)
             else:
-                clipped_face_box = driver_detection["clipped_box"]
-                face_rect = dlib.rectangle(*clipped_face_box)
-
-                # detecting landmarks facial landmarks
-                shape = predictor(gray, face_rect)
-                landmarks = np.array([[shape.part(i).x, shape.part(i).y] for i in range(68)])
-
-                # EAR calculation for blink detection
-                left_eye = landmarks[LEFT_EYE]
-                right_eye = landmarks[RIGHT_EYE]
-                left_ear = eye_aspect_ratio(left_eye)
-                right_ear = eye_aspect_ratio(right_eye)
-                ear = (
-                    None
-                    if left_ear is None or right_ear is None
-                    else round((left_ear + right_ear) / 2.0, 3)
+                data_store["EAR"] = ear
+                data_store["MAR"] = mar
+                eye_closure_score = normalize_eye_closure(ear)
+                mouth_open_score = normalize_mouth_opening(mar)
+                observed_at = self.benchmark.now()
+                self.benchmark.observe_raw_signal(
+                    ear < EAR_DROWSY_THRESHOLD or mar > MAR_DROWSY_THRESHOLD,
+                    observed_at,
                 )
+                fatigue = self.fatigue_state.update(
+                    eye_severity=eye_closure_score,
+                    eye_closed=ear < EAR_DROWSY_THRESHOLD,
+                    mouth_severity=mouth_open_score,
+                    now=observed_at,
+                )
+                data_store["is_drowsy"] = fatigue.is_drowsy
+                intervention_observation = fatigue.is_drowsy
+                if fatigue.just_confirmed:
+                    self.benchmark.confirm_fatigue(observed_at)
 
-                # MAR calculation for yawning detection
-                mouth = landmarks[MOUTH]
-                mar = mouth_aspect_ratio(mouth)
-
-                head_pose = estimate_head_pose(landmarks, w, h)
-                frame_eligibility = assess_frame_eligibility(
-                    frame_width=w,
-                    frame_height=h,
-                    detection_confidence=driver_detection["confidence"],
-                    raw_face_box=driver_detection["raw_box"],
-                    clipped_face_box=clipped_face_box,
-                    landmarks=landmarks,
+            _store_awake_gate(
+                self.awake_state_gate.observe(
+                    frame=frame_eligibility,
                     ear=ear,
                     mar=mar,
-                    head_pose=head_pose,
-                    policy=FRAME_ELIGIBILITY_POLICY,
-                )
-                _store_frame_eligibility(frame_eligibility)
-
-                intervention_observation: bool | None = None
-                if ear is None or mar is None:
-                    fatigue_state.face_missing()
-                    data_store["is_drowsy"] = False
-                    observed_at = benchmark.now()
-                    benchmark.observe_raw_signal(False, observed_at)
-                else:
-                    data_store["EAR"] = ear
-                    data_store["MAR"] = mar
-
-                    # normalise differently scaled EAR/MAR values before aggregation
-                    eye_closure_score = normalize_eye_closure(ear)
-                    mouth_open_score = normalize_mouth_opening(mar)
-
-                    # start an episode at the first raw eye-closure or yawn signal
-                    observed_at = benchmark.now()
-                    benchmark.observe_raw_signal(
-                        ear < EAR_DROWSY_THRESHOLD or mar > MAR_DROWSY_THRESHOLD,
-                        observed_at,
-                    )
-                    fatigue = fatigue_state.update(
-                        eye_severity=eye_closure_score,
-                        eye_closed=ear < EAR_DROWSY_THRESHOLD,
-                        mouth_severity=mouth_open_score,
-                        now=observed_at,
-                    )
-
-                    if fatigue.is_drowsy:
-                        cv2.putText(frame, "DROWSY! Wake up!", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 4)
-
-                    data_store["is_drowsy"] = fatigue.is_drowsy
-                    intervention_observation = fatigue.is_drowsy
-                    if fatigue.just_confirmed:
-                        benchmark.confirm_fatigue(observed_at)
-
-                _store_awake_gate(
-                    awake_state_gate.observe(
-                        frame=frame_eligibility,
-                        ear=ear,
-                        mar=mar,
-                        fatigue_suspected=bool(data_store["is_drowsy"]),
-                        now=observed_at,
-                    )
-                )
-
-                intervention = intervention_controller.update(
-                    is_drowsy=intervention_observation,
+                    fatigue_suspected=bool(data_store["is_drowsy"]),
                     now=observed_at,
                 )
-                local_alarm_delivered = _store_intervention(
-                    intervention,
-                    local_alarm,
-                )
-
-                # sending data to frontend
-                data = dict(data_store)
-                if local_alarm_delivered:
-                    benchmark.intervention_delivered(benchmark.now())
-                elif intervention.action is InterventionAction.RECOVERED:
-                    benchmark.fatigue_recovered()
-                emit_started_at = benchmark.now()
-                socketio.emit("update_data", data)
-                non_vision_seconds += benchmark.now() - emit_started_at
-
-                # drawing landmarks
-                for (x, y) in landmarks:
-                    cv2.circle(frame, (x, y), 1, (0, 255, 0), -1)
-
-            processing_finished_at = benchmark.now()
-
-            # converting frame to bytes for streaming
-            _, buffer = cv2.imencode('.jpg', frame)
-            frame_bytes = buffer.tobytes()
-            loop_finished_at = benchmark.now()
-            benchmark.record_frame(
-                processing_finished_at - processing_started_at - non_vision_seconds,
-                loop_finished_at - loop_started_at,
             )
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-    # release the capture even if the client disconnects mid-stream
-    finally:
-        cap.release()
+            intervention = self.intervention_controller.update(
+                is_drowsy=intervention_observation,
+                now=observed_at,
+            )
+
+        local_alarm_delivered = _store_intervention(
+            intervention,
+            self.local_alarm,
+        )
+        if local_alarm_delivered:
+            self.benchmark.intervention_delivered(self.benchmark.now())
+        elif intervention.action is InterventionAction.RECOVERED:
+            self.benchmark.fatigue_recovered()
+
+        if bool(data_store["is_drowsy"]):
+            cv2.putText(
+                frame,
+                "DROWSY! Wake up!",
+                (50, 100),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,
+                (0, 0, 255),
+                4,
+            )
+        if landmarks is not None:
+            for x, y in landmarks:
+                cv2.circle(frame, (x, y), 1, (0, 255, 0), -1)
+
+        emit_started_at = self.benchmark.now()
+        socketio.emit("update_data", dict(data_store))
+        non_vision_seconds += self.benchmark.now() - emit_started_at
+        processing_finished_at = self.benchmark.now()
+
+        encoded, buffer = cv2.imencode(".jpg", frame)
+        if not encoded:
+            raise RuntimeError("JPEG encoding failed")
+        loop_finished_at = self.benchmark.now()
+        self.benchmark.record_frame(
+            processing_finished_at - processing_started_at - non_vision_seconds,
+            loop_finished_at - loop_started_at,
+        )
+        return buffer.tobytes()
+
+
+def _open_camera():
+    capture = cv2.VideoCapture(0)
+    if not capture.isOpened():
+        capture.release()
+        raise RuntimeError("unable to open camera index 0")
+    return capture
+
+
+def _store_camera_status(running: bool, error: str | None) -> None:
+    data_store["camera_running"] = bool(running)
+    data_store["camera_error"] = error
+
+
+monitoring_worker = MonitoringWorker(
+    capture_factory=_open_camera,
+    processor_factory=CameraPipeline,
+    status_callback=_store_camera_status,
+)
+
+
+def start_monitoring() -> None:
+    monitoring_worker.start()
+
+
+def stop_monitoring() -> None:
+    monitoring_worker.stop()
+
+
+def generate_frames() -> Iterator[bytes]:
+    """Subscribe an HTTP client to the worker's latest encoded frame."""
+    yield from monitoring_worker.stream()

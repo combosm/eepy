@@ -55,10 +55,19 @@ function updateCalibrationDiagnostic(data) {
 }
 
 function updateInterventionDiagnostic(data) {
+    var cameraElement = document.getElementById("camera_status");
     var statusElement = document.getElementById("intervention_status");
     var detailsElement = document.getElementById("intervention_details");
     var alarmElement = document.getElementById("local_alarm_status");
     var active = data.intervention_active === true;
+
+    if (data.camera_running === true) {
+        cameraElement.innerText = "RUNNING";
+        cameraElement.className = "calibration-quality calibration-quality--valid";
+    } else {
+        cameraElement.innerText = "RETRYING";
+        cameraElement.className = "calibration-quality calibration-quality--rejected";
+    }
 
     statusElement.innerText = active ? "ALERT ACTIVE" : "MONITORING";
     statusElement.className = "calibration-quality " + (
@@ -80,6 +89,9 @@ function updateInterventionDiagnostic(data) {
         var error = data.local_alarm_error || "audio unavailable";
         alarmElement.innerText = "Visual fallback active (" + error + ")";
     }
+
+    var cameraErrorElement = document.getElementById("camera_error");
+    cameraErrorElement.innerText = data.camera_error || "No camera errors";
 }
 
 function updateDashboard(data) {

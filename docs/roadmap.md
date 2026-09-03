@@ -250,6 +250,14 @@ Use personalised measurements when a valid calibration profile exists.
 
 ## 5. Separate Camera / Inference from Flask
 
+### Status
+
+Implemented with one application-owned monitoring worker. The worker opens and retries
+camera index `0`, captures and processes each frame once, owns the temporal fatigue,
+calibration, intervention, alarm, and benchmark objects, and publishes only the latest
+encoded JPEG. HTTP stream clients subscribe to that shared snapshot and no longer own
+camera or inference lifecycles.
+
 ### Goal
 
 Make the monitoring pipeline continuous and independent from HTTP streaming.
@@ -448,13 +456,15 @@ Completed steps:
 
 ## Step 3: Hybrid Intervention Controller / Deterministic Local Path
 
+## Step 5: Separate Camera / Inference from Flask
+
 Next step:
 
-## Step 5: Separate Camera / Inference from Flask
+## Step 6: Replace Global `data_store` with `MonitoringSession`
 
 Immediate design question:
 
-> How should EEPY give the local application one continuous camera and inference worker
-> so monitoring and intervention continue independently of browser stream connections?
+> How should EEPY replace the mutable global dictionary with one explicit, thread-safe
+> session owner for monitoring, calibration, intervention, and assistant state?
 
 The global fatigue detector remains active throughout and acts as the safety fallback.

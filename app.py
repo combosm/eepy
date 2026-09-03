@@ -1,11 +1,26 @@
 from __future__ import annotations
 
-from flask import Flask, render_template, Response, jsonify
-from vision.camera import generate_frames, data_store, socketio
+import atexit
 import os
+
+from flask import Flask, render_template, Response, jsonify
+from vision.camera import (
+    data_store,
+    generate_frames,
+    socketio,
+    start_monitoring,
+    stop_monitoring,
+)
 
 app = Flask(__name__)
 socketio.init_app(app, cors_allowed_origins="*")
+atexit.register(stop_monitoring)
+
+
+@app.before_request
+def ensure_monitoring_started() -> None:
+    """Start once in the process serving requests, independent of video clients."""
+    start_monitoring()
 
 
 # route for video streaming
@@ -57,4 +72,7 @@ def home() -> str:
 
 if __name__ == "__main__":
     debug_enabled = os.getenv("FLASK_DEBUG", "0").lower() in ("1", "true", "yes", "on")
+    # Werkzeug's debug parent must not compete with its serving child for camera 0.
+    if not debug_enabled or os.getenv("WERKZEUG_RUN_MAIN") == "true":
+        start_monitoring()
     socketio.run(app, host="0.0.0.0", port=5001, debug=debug_enabled)
