@@ -54,6 +54,34 @@ function updateCalibrationDiagnostic(data) {
         (data.calibration_history_seconds ?? 0) + "s history";
 }
 
+function updateInterventionDiagnostic(data) {
+    var statusElement = document.getElementById("intervention_status");
+    var detailsElement = document.getElementById("intervention_details");
+    var alarmElement = document.getElementById("local_alarm_status");
+    var active = data.intervention_active === true;
+
+    statusElement.innerText = active ? "ALERT ACTIVE" : "MONITORING";
+    statusElement.className = "calibration-quality " + (
+        active
+            ? "calibration-quality--rejected"
+            : "calibration-quality--valid"
+    );
+
+    var episode = data.intervention_episode_id;
+    var level = data.intervention_escalation_level ?? 0;
+    var message = data.intervention_message || "No active fatigue episode";
+    detailsElement.innerText = episode == null
+        ? message
+        : "Episode " + episode + ", level " + level + ": " + message;
+
+    if (data.local_alarm_available === true) {
+        alarmElement.innerText = "Local speaker alarm ready";
+    } else {
+        var error = data.local_alarm_error || "audio unavailable";
+        alarmElement.innerText = "Visual fallback active (" + error + ")";
+    }
+}
+
 function updateDashboard(data) {
     document.getElementById("ear_value").innerText = data.EAR;
     document.getElementById("mar_value").innerText = data.MAR;
@@ -61,6 +89,7 @@ function updateDashboard(data) {
         "Drowsiness Status: " + (data.is_drowsy ? "Yes 💤" : "No ✅");
     document.getElementById("ai_response").innerText = data.ai_response;
     updateCalibrationDiagnostic(data);
+    updateInterventionDiagnostic(data);
 }
 
 socket.on("update_data", function(data) {

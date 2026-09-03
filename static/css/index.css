@@ -96,7 +96,8 @@ h1 {
     margin-top: 12px;
 }
 
-.calibration-diagnostic {
+.calibration-diagnostic,
+.intervention-diagnostic {
     box-sizing: border-box;
     width: min(100%, 700px);
     margin-top: 12px;
@@ -107,6 +108,11 @@ h1 {
     color: #2d1630;
     font-family: 'Poppins', sans-serif;
     text-align: left;
+}
+
+.intervention-diagnostic {
+    border-color: #b42318;
+    background: rgba(255, 245, 245, 0.92);
 }
 
 .calibration-quality-row,

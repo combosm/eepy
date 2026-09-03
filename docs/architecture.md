@@ -15,15 +15,15 @@ path is intended to be local and deterministic:
 camera -> facial measurements -> fatigue state -> local intervention
 ```
 
-The first three stages exist locally. A real local intervention does **not** exist yet:
-confirmed fatigue currently produces an overlay in the streamed video and updates UI
-state only. The separate voice assistant depends on online services and is initiated by
-the user; it is not connected to fatigue confirmation and must not become a prerequisite
-for a future local alert.
+All four stages now exist locally. Confirmed fatigue produces the video/dashboard warning
+and immediately requests a non-blocking, locally synthesised speaker alarm. A deterministic
+controller tracks numbered episodes, repeat cooldowns, escalation level, and observed
+recovery. The separate voice assistant still depends on online services and is initiated
+by the user; it is not connected to fatigue confirmation.
 
 `docs/roadmap.md` is the source of truth for planned changes. Calibration Steps 1A and
 1B now provide per-frame technical-quality classification and rolling awake-state
-eligibility, but personal profile generation and calibrated fatigue scoring do not. The intervention controller,
+eligibility, but personal profile generation and calibrated fatigue scoring do not. The
 camera/inference worker independent of HTTP, explicit `MonitoringSession`, and
 non-blocking assistant also remain planned rather than implemented.
 
@@ -37,6 +37,8 @@ non-blocking assistant also remain planned rather than implemented.
 │   ├── calibration_eligibility.py Per-frame calibration quality classification
 │   ├── awake_state_gate.py        Rolling awake-state calibration eligibility
 │   ├── drowsiness.py              Deterministic, time-based fatigue state machine
+│   ├── intervention.py            Fatigue episodes, cooldowns, and escalation
+│   ├── local_alarm.py             Offline non-blocking speaker alarm adapter
 │   └── benchmark.py               Optional in-memory latency/FPS instrumentation
 ├── ai/
 │   ├── ai_agent.py                LangChain 1.x/OpenAI agent lifecycle
@@ -58,6 +60,9 @@ non-blocking assistant also remain planned rather than implemented.
 ├── tests/test_calibration_eligibility.py
 │                                     Unit tests for per-frame calibration quality
 ├── tests/test_awake_state_gate.py     Unit tests for rolling calibration eligibility
+├── tests/test_intervention.py         Unit tests for episode/controller transitions
+├── tests/test_local_alarm.py          Unit tests for alarm success and fallback
+├── tests/test_benchmark.py            Unit tests for intervention latency lifecycle
 ├── docs/reference/               Landmark-index diagrams and explanation
 ├── docs/roadmap.md               Ordered future architecture milestones
 ├── requirements.txt              Pinned Python dependencies
@@ -79,6 +84,8 @@ flowchart LR
     Quality[vision.calibration_eligibility]
     AwakeGate[vision.awake_state_gate]
     Fatigue[vision.drowsiness.FatigueState]
+    Intervention[vision.intervention.InterventionController]
+    Alarm[vision.local_alarm.LocalAlarm]
     Bench[vision.benchmark.EepyBenchmark]
     Store[(vision.camera.data_store)]
     Socket[Flask-SocketIO]
@@ -93,6 +100,9 @@ flowchart LR
     Stream --> Fatigue
     Quality --> AwakeGate
     Fatigue --> AwakeGate
+    Fatigue --> Intervention
+    Intervention --> Alarm
+    Intervention --> Store
     AwakeGate --> Store
     Stream --> Bench
     Stream -->|mutates| Store
@@ -111,7 +121,8 @@ flowchart LR
 There are two mostly separate runtime paths which meet at `data_store` and the browser:
 
 - The local vision path runs inside the `/video_feed` response generator. It captures
-  frames, performs inference, updates fatigue state, emits metrics, and yields JPEGs.
+  frames, performs inference, updates fatigue state, runs the local intervention
+  controller, emits metrics, and yields JPEGs.
 - The optional assistant path is loaded lazily and runs synchronously inside `/ai_output`.
   It records from the microphone, calls online speech recognition and an OpenAI-backed
   agent (which may call web tools), stores the answer, and returns JSON. Import, speech,
@@ -147,7 +158,8 @@ camera application from starting.
 Important lifetimes:
 
 - `face_net`, `predictor`, `socketio`, and `data_store` are process-wide globals.
-- `FatigueState`, `EepyBenchmark`, and `cv2.VideoCapture(0)` are created once per call to
+- `FatigueState`, `AwakeStateGate`, `InterventionController`, `LocalAlarm`,
+  `EepyBenchmark`, and `cv2.VideoCapture(0)` are created once per call to
   `generate_frames()`—in practice, once per `/video_feed` client connection.
 - The LangChain 1.x compiled agent graph is constructed on the first successful assistant
   request and cached process-wide. `answer_once()` nevertheless supplies a new empty
@@ -189,8 +201,10 @@ For every captured frame, `generate_frames()` performs this sequence:
 9. For computable EAR/MAR values, normalise them and update `FatigueState` independently
    of calibration frame quality.
 10. Feed frame quality, raw ratios, and current fatigue state into the rolling awake gate.
-11. Update global UI state, emit it, draw landmarks and (when drowsy) warning text.
-12. JPEG-encode the annotated frame and yield it to the HTTP client.
+11. Feed fatigue state into the intervention controller and immediately start any local
+    speaker alarm action before emitting browser state.
+12. Update global UI state, emit it, draw landmarks and (when drowsy) warning text.
+13. JPEG-encode the annotated frame and yield it to the HTTP client.
 
 The “largest face is the driver” rule is a current heuristic, not identity tracking. It
 can switch between people from frame to frame. For the current single-driver prototype,
@@ -315,6 +329,29 @@ Opening the eyes resets closure timing immediately. `face_missing()` clears clos
 mouth history, and drowsiness so evidence from one visible face is not carried across a
 gap to a potentially different face.
 
+## Local intervention controller
+
+`vision.intervention.InterventionController` is independent of OpenCV, Flask, audio, and
+network services. The first `is_drowsy=True` update creates a monotonically increasing
+integer episode ID, sets escalation level 1, and emits one `initial_alert` action. It does
+not emit another action on every frame. Persistent fatigue emits `repeat_alert` after each
+15-second cooldown and increments the escalation level. An observed non-drowsy update
+emits `recovered` once and closes the episode.
+
+An unavailable observation is represented by `None`, not `False`. This keeps an active
+episode open when the face or ratio measurement disappears, because loss of observation
+is not evidence of recovery. Cooldown alerts can still repeat in that state. Timestamps
+must be finite and monotonic; invalid controller inputs raise rather than silently
+corrupting episode timing.
+
+`vision.local_alarm.LocalAlarm` synthesises three 880 Hz pulses as signed 16-bit PCM in
+memory and prepares them as a pygame `Sound`. `Sound.play()` allocates a mixer channel and
+returns immediately, so the vision loop does not wait for the tone to finish. The alarm
+is attempted before Socket.IO emission and does not import or call the optional assistant.
+If mixer initialisation or playback fails, the error is exposed in monitoring state and
+the existing local video warning plus dashboard alert remain active. The terminal bell is
+also attempted as a last resort, but it is not considered successful alarm delivery.
+
 ## Shared state and concurrency
 
 `vision.camera.data_store` is the current cross-component state container:
@@ -331,18 +368,27 @@ gap to a potentially different face.
     "calibration_evidence_seconds": 0.0,
     "calibration_history_seconds": 0.0,
     "calibration_sample_approved": False,
+    "intervention_active": False,
+    "intervention_episode_id": None,
+    "intervention_escalation_level": 0,
+    "intervention_action": None,
+    "intervention_message": "",
+    "local_alarm_available": False,
+    "local_alarm_error": None,
     "ai_response": "",
 }
 ```
 
-The vision generator mutates the measurement, fatigue, and calibration fields.
-`/ai_output` mutates `ai_response`. `/data` and socket emissions read shallow copies or the dictionary itself.
+The vision generator mutates the measurement, fatigue, calibration, and intervention
+fields. `/ai_output` mutates `ai_response`. `/data` and socket emissions read shallow
+copies or the dictionary itself.
 There is no lock, session object, ownership protocol, or per-field timestamp.
 
 Consequences of the current design:
 
 - Multiple browser stream connections open multiple handles to webcam `0`, run duplicate
-  inference, maintain different fatigue histories, and race to update one store.
+  inference, maintain different fatigue/intervention histories, may request overlapping
+  alarms, and race to update one store.
 - A stream disconnect destroys that connection's fatigue and benchmark state and releases
   its camera handle; monitoring does not continue independently of the dashboard.
 - Depending on the server's threading/worker configuration, assistant and vision updates
@@ -382,16 +428,15 @@ internet-dependent enhancement behavior.
 pygame. It requires `ELEVENLABS_API_KEY`, writes a temporary MP3, plays it synchronously,
 and attempts to delete it. This is used by the standalone wake-word loop, not the Flask
 route. Failures generally print and return `False`; there is no deterministic local spoken
-fallback yet.
+fallback in that optional assistant path. Fatigue alerts use the separate offline alarm.
 
 ## Benchmarking and tests
 
 Setting `EEPY_BENCHMARK_ENABLED` to a truthy value enables an `EepyBenchmark` per video
 stream. `EEPY_BENCHMARK_FRAME_COUNT` controls when it prints a one-time summary (default
 500 frames). It records processing latency, complete frame-loop latency, FPS, raw-signal
-to confirmation, and confirmation to “intervention invocation.” The current invocation is
-only a placeholder method call immediately after confirmation, not delivered intervention;
-its latency must not be interpreted as safety response latency.
+to confirmation, and confirmation to successful local alarm delivery. Failed speaker
+attempts are not counted as delivery.
 
 `tests/test_drowsiness.py` covers the pure state machine: blink grace, severity-dependent
 timing, mouth corroboration, one-shot transitions, recovery, and missing-face reset. It
@@ -407,6 +452,15 @@ degraded evidence, tolerated and excessive gaps, EAR instability and downward tr
 blink-like recovery, prolonged closure, stable low EAR, confirmed fatigue, sustained and
 repeated suspicious mouth behavior, quarantine/freeze behavior, and timestamp reset.
 
+`tests/test_intervention.py` covers initial and repeat actions, cooldown boundaries,
+escalation, recovery, episode IDs, missing observations, timestamp validation, and policy
+validation. `tests/test_local_alarm.py` covers mixer setup, non-blocking playback success,
+unavailable channels, initialisation failure, and contained playback exceptions without
+requiring physical audio hardware.
+
+`tests/test_benchmark.py` verifies successful local delivery timing and ensures an episode
+that recovers after failed audio does not prevent the next episode being benchmarked.
+
 CI installs native camera/audio dependencies, compiles Python files, and runs unittest
 discovery on Python 3.13. It does not start the camera pipeline and therefore does not
 require the downloaded landmark model during tests.
@@ -417,13 +471,14 @@ require the downloaded landmark model during tests.
 |---|---|---|
 | Landmark model absent or model path wrong | App import fails | Monitoring never starts |
 | Webcam cannot open/read | Stream ends and camera is released | No persistent local fault alert |
-| No face detected | Fatigue history clears and `is_drowsy` becomes false | Safer against cross-face evidence, but loss of driver visibility is not alerted |
+| No face detected | Fatigue history clears and `is_drowsy` becomes false; an already-active intervention episode stays open | Recovery is not falsely inferred, but loss of driver visibility has no separate alert |
 | No face after prior measurements | EAR/MAR remain at their previous values; no socket event is emitted on that branch | Dashboard can show stale measurements until polling, with no visibility flag |
 | Landmark prediction/encoding error | Exception escapes generator; `finally` releases camera | Monitoring stream stops |
+| Local mixer cannot initialise or allocate a channel | Error is exposed; terminal bell is attempted; visual warning remains active | Audible delivery is not guaranteed and is not counted by the benchmark |
 | Socket.IO/CDN unavailable | Three-second `/data` polling still updates the page | Video and detection can continue, but UI is delayed |
 | Speech not recognised | `/ai_output` returns a fixed apology | Vision is logically independent, subject to server resource contention |
 | Assistant import, speech, OpenAI, tool, or network error | `/ai_output` logs the failure and returns HTTP 503; local monitoring continues | Must never be used for the initial local warning |
-| ElevenLabs/playback error | Logs error and returns false | No local spoken fallback exists |
+| ElevenLabs/playback error | Logs error and returns false | Unrelated to the local fatigue alarm |
 
 ## Safe extension points and dependency direction
 

@@ -70,12 +70,20 @@ class EepyBenchmark:
         if self._raw_at_confirmation is not None:
             self.raw_to_confirmed.append(confirmed_at - self._raw_at_confirmation)
 
-    def intervention_invoked(self, invoked_at: float) -> None:
+    def intervention_delivered(self, delivered_at: float) -> None:
         if not self.enabled or self._printed or self._confirmed_at is None:
             return
-        self.confirmed_to_intervention.append(invoked_at - self._confirmed_at)
+        self.confirmed_to_intervention.append(delivered_at - self._confirmed_at)
         if self._raw_at_confirmation is not None:
-            self.raw_to_intervention.append(invoked_at - self._raw_at_confirmation)
+            self.raw_to_intervention.append(delivered_at - self._raw_at_confirmation)
+        self._raw_signal_started_at = None
+        self._raw_at_confirmation = None
+        self._confirmed_at = None
+
+    def fatigue_recovered(self) -> None:
+        """Close an episode that ended without a recorded alarm delivery."""
+        if not self.enabled or self._printed:
+            return
         self._raw_signal_started_at = None
         self._raw_at_confirmation = None
         self._confirmed_at = None
@@ -122,9 +130,9 @@ class EepyBenchmark:
             "Raw signal -> confirmed fatigue", self.raw_to_confirmed
         )
         self._print_latency(
-            "Confirmed fatigue -> intervention invocation",
+            "Confirmed fatigue -> local alarm delivery",
             self.confirmed_to_intervention,
         )
         self._print_latency(
-            "Raw signal -> intervention invocation", self.raw_to_intervention
+            "Raw signal -> local alarm delivery", self.raw_to_intervention
         )

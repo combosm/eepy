@@ -158,6 +158,12 @@ Never assume the driver is awake merely because the session has just started.
 
 ## 2. Passive Personalised Calibration
 
+### Status
+
+Deferred until after the local intervention and core runtime-architecture milestones.
+Steps 1A and 1B remain active and diagnostic, but no personal profile is currently built
+and the global fatigue model remains the safety fallback.
+
 ### Goal
 
 Learn driver-specific facial baselines in the background without requiring a dedicated calibration screen or mandatory wait period.
@@ -187,6 +193,16 @@ Saved driver profiles may be explored later.
 
 ## 3. Hybrid Intervention Controller
 
+### Status
+
+The deterministic local intervention path is implemented. Confirmed fatigue starts a
+numbered episode, immediately requests a non-blocking local speaker alarm, keeps the
+visual warning active, repeats after a 15-second cooldown while fatigue persists, and
+records observed recovery. Missing observations do not falsely close an active episode.
+
+Optional online AI behavior remains deferred to Step 7 and must never gate the initial
+alert. The current local warning is an alarm tone rather than generated speech.
+
 ### Goal
 
 Turn fatigue confirmation into a real driver-safety response.
@@ -213,6 +229,10 @@ Fatigue confirmed
 ---
 
 ## 4. Refactor Fatigue Scoring Around Calibration
+
+### Status
+
+Deferred with Step 2 because calibrated scoring requires a trustworthy personal profile.
 
 ### Goal
 
@@ -389,7 +409,7 @@ These should not distract from the core safety functionality during the current 
 
 The roadmap numbers describe the major product improvements, but implementation dependencies may justify completing them in a slightly different sequence.
 
-The immediate sequence is:
+The original calibration-first sequence was:
 
 1. calibration eligibility / hard frame rejection
 2. calibration eligibility / rolling awake-state gating
@@ -398,6 +418,21 @@ The immediate sequence is:
 5. hybrid intervention controller
 
 Then continue through the architectural and reliability improvements.
+
+Calibration is now intentionally deferred. The active implementation sequence is:
+
+1. hybrid intervention controller with immediate local alert
+2. separate camera/inference ownership from Flask
+3. replace global `data_store` with `MonitoringSession`
+4. make the optional AI assistant non-blocking and resilient
+5. strengthen integration tests and benchmarking throughout those changes
+6. return to passive personalised calibration
+7. refactor fatigue scoring around a validated calibration profile
+8. consider persistence and production hardening when justified
+
+This reordering does not remove Steps 1A or 1B. They continue to expose calibration
+eligibility diagnostics, but do not affect the global fatigue detector. Step 4 must not
+begin before Step 2 produces a trustworthy bounded profile.
 
 Only implement one requested milestone at a time.
 
@@ -411,13 +446,15 @@ Completed steps:
 
 ## Step 1B: Calibration Eligibility / Rolling Awake-State Gating
 
+## Step 3: Hybrid Intervention Controller / Deterministic Local Path
+
 Next step:
 
-## Step 2: Passive Personalised Calibration
+## Step 5: Separate Camera / Inference from Flask
 
 Immediate design question:
 
-> How should EEPY turn rolling-gate-approved observations into bounded, robust
-> session-only personal EAR and MAR baselines while retaining global defaults?
+> How should EEPY give the local application one continuous camera and inference worker
+> so monitoring and intervention continue independently of browser stream connections?
 
 The global fatigue detector remains active throughout and acts as the safety fallback.

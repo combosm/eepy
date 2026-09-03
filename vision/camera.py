@@ -21,6 +21,13 @@ from vision.calibration_eligibility import (
 )
 from vision.awake_state_gate import AwakeGateUpdate, AwakeStateGate
 from vision.drowsiness import FatigueState
+from vision.intervention import (
+    InterventionAction,
+    InterventionController,
+    InterventionPolicy,
+    InterventionUpdate,
+)
+from vision.local_alarm import LocalAlarm
 
 socketio = SocketIO()
 ### TODO
@@ -66,6 +73,7 @@ MOUTH_SCORE_WEIGHT = 0.3
 EYE_CLOSURE_GRACE_SECONDS = 0.5
 EYE_CLOSURE_RAMP_SECONDS = 1.0
 MOUTH_EVIDENCE_WINDOW_SECONDS = 5.0
+INTERVENTION_REPEAT_COOLDOWN_SECONDS = 15.0
 
 data_store = {
     "EAR": 0,
@@ -78,6 +86,13 @@ data_store = {
     "calibration_evidence_seconds": 0.0,
     "calibration_history_seconds": 0.0,
     "calibration_sample_approved": False,
+    "intervention_active": False,
+    "intervention_episode_id": None,
+    "intervention_escalation_level": 0,
+    "intervention_action": None,
+    "intervention_message": "",
+    "local_alarm_available": False,
+    "local_alarm_error": None,
     "ai_response": "",
 }
 
@@ -180,6 +195,44 @@ def _store_awake_gate(update: AwakeGateUpdate) -> None:
     )
 
 
+def _store_intervention(
+    update: InterventionUpdate,
+    alarm: LocalAlarm,
+) -> bool:
+    """Publish intervention state and synchronously start any local alarm."""
+    data_store["intervention_active"] = bool(update.active)
+    data_store["intervention_episode_id"] = update.episode_id
+    data_store["intervention_escalation_level"] = update.escalation_level
+    data_store["intervention_action"] = (
+        update.action.value if update.action is not None else None
+    )
+    data_store["local_alarm_available"] = alarm.available
+
+    if update.action is InterventionAction.INITIAL_ALERT:
+        data_store["intervention_message"] = (
+            "Fatigue detected. Wake up and pull over safely."
+        )
+    elif update.action is InterventionAction.REPEAT_ALERT:
+        data_store["intervention_message"] = (
+            "Fatigue persists. Pull over safely now."
+        )
+    elif update.action is InterventionAction.RECOVERED:
+        data_store["intervention_message"] = "Driver appears responsive again."
+        data_store["local_alarm_error"] = alarm.error
+        return False
+    elif not update.active:
+        data_store["intervention_message"] = ""
+
+    if not update.should_alert:
+        data_store["local_alarm_error"] = alarm.error
+        return False
+
+    alarm_result = alarm.play()
+    data_store["local_alarm_available"] = alarm.available
+    data_store["local_alarm_error"] = alarm_result.error
+    return alarm_result.delivered
+
+
 def clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
     return max(lower, min(value, upper))
 
@@ -207,6 +260,14 @@ def generate_frames() -> Iterator[bytes]:
         mouth_weight=MOUTH_SCORE_WEIGHT,
     )
     awake_state_gate = AwakeStateGate()
+    intervention_controller = InterventionController(
+        InterventionPolicy(
+            repeat_cooldown_seconds=INTERVENTION_REPEAT_COOLDOWN_SECONDS,
+        )
+    )
+    local_alarm = LocalAlarm()
+    data_store["local_alarm_available"] = local_alarm.available
+    data_store["local_alarm_error"] = local_alarm.error
     
     try:
         while True:
@@ -265,6 +326,11 @@ def generate_frames() -> Iterator[bytes]:
                         now=observed_at,
                     )
                 )
+                intervention = intervention_controller.update(
+                    is_drowsy=None,
+                    now=observed_at,
+                )
+                _store_intervention(intervention, local_alarm)
                 benchmark.observe_raw_signal(False, observed_at)
             else:
                 clipped_face_box = driver_detection["clipped_box"]
@@ -304,7 +370,7 @@ def generate_frames() -> Iterator[bytes]:
                 )
                 _store_frame_eligibility(frame_eligibility)
 
-                fatigue_just_confirmed = False
+                intervention_observation: bool | None = None
                 if ear is None or mar is None:
                     fatigue_state.face_missing()
                     data_store["is_drowsy"] = False
@@ -335,7 +401,7 @@ def generate_frames() -> Iterator[bytes]:
                         cv2.putText(frame, "DROWSY! Wake up!", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 4)
 
                     data_store["is_drowsy"] = fatigue.is_drowsy
-                    fatigue_just_confirmed = fatigue.just_confirmed
+                    intervention_observation = fatigue.is_drowsy
                     if fatigue.just_confirmed:
                         benchmark.confirm_fatigue(observed_at)
 
@@ -349,11 +415,21 @@ def generate_frames() -> Iterator[bytes]:
                     )
                 )
 
+                intervention = intervention_controller.update(
+                    is_drowsy=intervention_observation,
+                    now=observed_at,
+                )
+                local_alarm_delivered = _store_intervention(
+                    intervention,
+                    local_alarm,
+                )
+
                 # sending data to frontend
                 data = dict(data_store)
-                if fatigue_just_confirmed:
-                    # no real intervention exists yet 
-                    benchmark.intervention_invoked(benchmark.now())
+                if local_alarm_delivered:
+                    benchmark.intervention_delivered(benchmark.now())
+                elif intervention.action is InterventionAction.RECOVERED:
+                    benchmark.fatigue_recovered()
                 emit_started_at = benchmark.now()
                 socketio.emit("update_data", data)
                 non_vision_seconds += benchmark.now() - emit_started_at
