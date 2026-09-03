@@ -77,8 +77,9 @@ must not silently alter fatigue thresholds or unsafe eye-closure duration.
 
 ### Status
 
-Not implemented. Step 1A now supplies the per-frame quality and reason codes this rolling
-gate will consume.
+Implemented as a deterministic, time-based rolling gate. It consumes Step 1A quality
+results and exposes eligibility, current-sample approval, weighted evidence duration,
+history duration, and explicit reason codes in monitoring state.
 
 ### Goal
 
@@ -116,7 +117,7 @@ requiring a perfect stream. Valid frames should provide the strongest evidence, 
 frames may provide weaker evidence, and rejected frames must not contribute measurements.
 A small number of poor frames should delay eligibility rather than reset all progress.
 
-Step 1B still needs to define and test:
+The current implementation defines and tests:
 
 - a time-based rolling observation window
 - the minimum duration and amount of usable recent evidence
@@ -127,6 +128,21 @@ Step 1B still needs to define and test:
 - temporal EAR stability, trends, prolonged closure, and blink-like recovery
 - recent MAR behaviour as corroborating evidence rather than a single-condition decision
 - diagnostic state explaining why rolling eligibility has not yet been reached
+
+The initial policy uses a 10-second rolling window, requires at least 8 seconds of
+history and 6 weighted seconds of usable evidence, gives degraded frames half weight,
+and allows no more than a 1-second gap from the latest awake-consistent measurement.
+Valid and degraded samples are credited by elapsed time with a per-observation cap, so
+eligibility does not depend on camera frame rate.
+
+An EAR below the existing global `0.3` closure threshold immediately withholds the
+current sample. A closure that recovers within the existing `0.5`-second blink grace
+preserves history; a longer closure quarantines the preceding 2 seconds and starts a
+5-second recovery freeze. Confirmed fatigue and sustained or repeated suspicious mouth
+opening use the same quarantine/freeze mechanism. EAR variability and a meaningful
+downward linear trend also block eligibility. These are conservative initial engineering
+defaults and require validation against representative drivers, cameras, lighting,
+glasses, and in-vehicle mounting positions before production use.
 
 ### Safety rule
 
@@ -389,16 +405,19 @@ Only implement one requested milestone at a time.
 
 # Current Focus
 
-Completed step:
+Completed steps:
 
 ## Step 1A: Calibration Eligibility / Hard Frame Rejection
 
+## Step 1B: Calibration Eligibility / Rolling Awake-State Gating
+
 Next step:
 
-## Step 1B: Calibration Eligibility / Rolling Awake-State Gating
+## Step 2: Passive Personalised Calibration
 
 Immediate design question:
 
-> How can EEPY determine that observed facial behaviour is sufficiently consistent with an awake driver to safely use those measurements for passive calibration, without assuming that startup measurements represent the driver's normal awake state?
+> How should EEPY turn rolling-gate-approved observations into bounded, robust
+> session-only personal EAR and MAR baselines while retaining global defaults?
 
 The global fatigue detector remains active throughout and acts as the safety fallback.

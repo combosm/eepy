@@ -31,6 +31,27 @@ function updateCalibrationDiagnostic(data) {
     reasonsElement.innerText = reasons.length > 0
         ? reasons.map(formatCalibrationReason).join(", ")
         : "No quality issues detected";
+
+    var awakeElement = document.getElementById("calibration_awake");
+    var awakeReasonsElement = document.getElementById("calibration_awake_reasons");
+    var evidenceElement = document.getElementById("calibration_evidence");
+    var awakeEligible = data.calibration_awake_eligible === true;
+    var awakeReasons = Array.isArray(data.calibration_awake_reasons)
+        ? data.calibration_awake_reasons
+        : [];
+
+    awakeElement.innerText = awakeEligible ? "ELIGIBLE" : "WAITING";
+    awakeElement.className = "calibration-quality " + (
+        awakeEligible
+            ? "calibration-quality--valid"
+            : "calibration-quality--degraded"
+    );
+    awakeReasonsElement.innerText = awakeReasons.length > 0
+        ? awakeReasons.map(formatCalibrationReason).join(", ")
+        : "Recent observations are consistently awake";
+    evidenceElement.innerText =
+        (data.calibration_evidence_seconds ?? 0) + "s weighted evidence / " +
+        (data.calibration_history_seconds ?? 0) + "s history";
 }
 
 function updateDashboard(data) {

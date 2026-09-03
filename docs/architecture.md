@@ -21,9 +21,9 @@ state only. The separate voice assistant depends on online services and is initi
 the user; it is not connected to fatigue confirmation and must not become a prerequisite
 for a future local alert.
 
-`docs/roadmap.md` is the source of truth for planned changes. Calibration Step 1A's
-per-frame technical-quality gate now exists, but rolling awake-state gating, personal
-profile generation, and calibrated fatigue scoring do not. The intervention controller,
+`docs/roadmap.md` is the source of truth for planned changes. Calibration Steps 1A and
+1B now provide per-frame technical-quality classification and rolling awake-state
+eligibility, but personal profile generation and calibrated fatigue scoring do not. The intervention controller,
 camera/inference worker independent of HTTP, explicit `MonitoringSession`, and
 non-blocking assistant also remain planned rather than implemented.
 
@@ -35,6 +35,7 @@ non-blocking assistant also remain planned rather than implemented.
 ├── vision/
 │   ├── camera.py                  Camera ownership, face inference, metrics, streaming
 │   ├── calibration_eligibility.py Per-frame calibration quality classification
+│   ├── awake_state_gate.py        Rolling awake-state calibration eligibility
 │   ├── drowsiness.py              Deterministic, time-based fatigue state machine
 │   └── benchmark.py               Optional in-memory latency/FPS instrumentation
 ├── ai/
@@ -56,6 +57,7 @@ non-blocking assistant also remain planned rather than implemented.
 ├── tests/test_drowsiness.py       Unit tests for deterministic fatigue transitions
 ├── tests/test_calibration_eligibility.py
 │                                     Unit tests for per-frame calibration quality
+├── tests/test_awake_state_gate.py     Unit tests for rolling calibration eligibility
 ├── docs/reference/               Landmark-index diagrams and explanation
 ├── docs/roadmap.md               Ordered future architecture milestones
 ├── requirements.txt              Pinned Python dependencies
@@ -75,6 +77,7 @@ flowchart LR
     Stream[vision.camera.generate_frames]
     Models[OpenCV face DNN + dlib landmarks]
     Quality[vision.calibration_eligibility]
+    AwakeGate[vision.awake_state_gate]
     Fatigue[vision.drowsiness.FatigueState]
     Bench[vision.benchmark.EepyBenchmark]
     Store[(vision.camera.data_store)]
@@ -88,6 +91,9 @@ flowchart LR
     Stream --> Models
     Stream --> Quality
     Stream --> Fatigue
+    Quality --> AwakeGate
+    Fatigue --> AwakeGate
+    AwakeGate --> Store
     Stream --> Bench
     Stream -->|mutates| Store
     Stream -->|JPEG multipart response| Browser
@@ -182,8 +188,9 @@ For every captured frame, `generate_frames()` performs this sequence:
 8. Classify calibration frame quality as valid, degraded, or rejected.
 9. For computable EAR/MAR values, normalise them and update `FatigueState` independently
    of calibration frame quality.
-10. Update global UI state, emit it, draw landmarks and (when drowsy) warning text.
-11. JPEG-encode the annotated frame and yield it to the HTTP client.
+10. Feed frame quality, raw ratios, and current fatigue state into the rolling awake gate.
+11. Update global UI state, emit it, draw landmarks and (when drowsy) warning text.
+12. JPEG-encode the annotated frame and yield it to the HTTP client.
 
 The “largest face is the driver” rule is a current heuristic, not identity tracking. It
 can switch between people from frame to frame. For the current single-driver prototype,
@@ -205,8 +212,8 @@ Missing faces, invalid boxes, malformed or non-finite landmarks, required landma
 outside the image, collapsed feature geometry, impossible vertical landmark ordering,
 invalid EAR/MAR, and extreme pose reject a frame. A relatively small face, clipped face
 box with visible required landmarks, lower confidence, moderate pose, or unavailable pose
-degrades it instead. Both valid and degraded frames may enter the future Step 1B rolling
-gate; rejected measurements may not.
+degrades it instead. Both valid and degraded frames may enter the Step 1B rolling gate;
+rejected measurements may not.
 
 Face occupancy is divided by frame width and height, visible face area is divided by the
 raw detection area, and landmark spans are divided by face width. These dimensionless
@@ -219,6 +226,28 @@ because the approximate pose model failed.
 The policy boundaries are named initial engineering defaults rather than validated
 production limits. They need representative camera testing. They do not change the
 existing global EAR/MAR fatigue thresholds or closure timing.
+
+### Rolling awake-state gate
+
+`vision.awake_state_gate.AwakeStateGate` is a pure, deterministic temporal gate created
+once per video stream beside `FatigueState`. It stores at most the current 10-second
+window of timestamped observations. Valid awake-consistent intervals receive full time
+credit, degraded intervals receive half credit, and rejected frames receive none. A
+maximum credit per interval prevents sparse observations from being mistaken for
+continuous evidence.
+
+Eligibility requires 8 seconds of recent history, 6 weighted seconds of evidence, a
+recent usable observation, stable EAR, no meaningful downward EAR trend, acceptable
+mouth behavior, and no active recovery freeze. Brief blink-like closure withholds that
+sample but preserves history. Prolonged closure, confirmed fatigue, and sustained or
+repeated suspicious mouth opening quarantine the preceding 2 seconds and extend a
+5-second recovery freeze. A backward or non-finite timestamp resets the temporal state.
+
+The dashboard receives the gate decision, explicit reason codes, evidence duration,
+history duration, and whether the current sample is approved. No personal baseline is
+built yet; Step 2 will be the first consumer of approved samples. Gate policy boundaries
+are initial conservative engineering defaults, not validated physiological constants.
+The independent global fatigue detector remains active regardless of gate eligibility.
 
 ### Facial ratios
 
@@ -297,12 +326,17 @@ gap to a potentially different face.
     "is_drowsy": False,
     "calibration_frame_quality": "rejected",
     "calibration_frame_reasons": ["no_face"],
+    "calibration_awake_eligible": False,
+    "calibration_awake_reasons": ["insufficient_history"],
+    "calibration_evidence_seconds": 0.0,
+    "calibration_history_seconds": 0.0,
+    "calibration_sample_approved": False,
     "ai_response": "",
 }
 ```
 
-The vision generator mutates the first five fields. `/ai_output` mutates
-`ai_response`. `/data` and socket emissions read shallow copies or the dictionary itself.
+The vision generator mutates the measurement, fatigue, and calibration fields.
+`/ai_output` mutates `ai_response`. `/data` and socket emissions read shallow copies or the dictionary itself.
 There is no lock, session object, ownership protocol, or per-field timestamp.
 
 Consequences of the current design:
@@ -367,6 +401,11 @@ Flask routes, assistant behavior, shared-state concurrency, or benchmark calcula
 classification; resolution-invariant geometry; low but finite EAR; missing and malformed
 measurements; clipping; relative face size; landmark visibility/order; and pose policy.
 Head-pose estimation itself still requires camera-level integration testing.
+
+`tests/test_awake_state_gate.py` covers startup withholding, time-weighted valid and
+degraded evidence, tolerated and excessive gaps, EAR instability and downward trend,
+blink-like recovery, prolonged closure, stable low EAR, confirmed fatigue, sustained and
+repeated suspicious mouth behavior, quarantine/freeze behavior, and timestamp reset.
 
 CI installs native camera/audio dependencies, compiles Python files, and runs unittest
 discovery on Python 3.13. It does not start the camera pipeline and therefore does not

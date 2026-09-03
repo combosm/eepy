@@ -19,6 +19,7 @@ from vision.calibration_eligibility import (
     assess_frame_eligibility,
     no_face_eligibility,
 )
+from vision.awake_state_gate import AwakeGateUpdate, AwakeStateGate
 from vision.drowsiness import FatigueState
 
 socketio = SocketIO()
@@ -72,6 +73,11 @@ data_store = {
     "is_drowsy": False,
     "calibration_frame_quality": "rejected",
     "calibration_frame_reasons": ["no_face"],
+    "calibration_awake_eligible": False,
+    "calibration_awake_reasons": ["insufficient_history"],
+    "calibration_evidence_seconds": 0.0,
+    "calibration_history_seconds": 0.0,
+    "calibration_sample_approved": False,
     "ai_response": "",
 }
 
@@ -162,6 +168,18 @@ def _store_frame_eligibility(quality: FrameEligibility) -> None:
     ]
 
 
+def _store_awake_gate(update: AwakeGateUpdate) -> None:
+    data_store["calibration_awake_eligible"] = bool(update.eligible)
+    data_store["calibration_awake_reasons"] = [
+        reason.value for reason in update.reasons
+    ]
+    data_store["calibration_evidence_seconds"] = update.weighted_evidence_seconds
+    data_store["calibration_history_seconds"] = update.history_seconds
+    data_store["calibration_sample_approved"] = bool(
+        update.current_sample_approved
+    )
+
+
 def clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
     return max(lower, min(value, upper))
 
@@ -188,6 +206,7 @@ def generate_frames() -> Iterator[bytes]:
         eye_weight=EYE_SCORE_WEIGHT,
         mouth_weight=MOUTH_SCORE_WEIGHT,
     )
+    awake_state_gate = AwakeStateGate()
     
     try:
         while True:
@@ -234,8 +253,19 @@ def generate_frames() -> Iterator[bytes]:
             if driver_detection is None:
                 fatigue_state.face_missing()
                 data_store["is_drowsy"] = False
-                _store_frame_eligibility(no_face_eligibility())
-                benchmark.observe_raw_signal(False, benchmark.now())
+                frame_eligibility = no_face_eligibility()
+                _store_frame_eligibility(frame_eligibility)
+                observed_at = benchmark.now()
+                _store_awake_gate(
+                    awake_state_gate.observe(
+                        frame=frame_eligibility,
+                        ear=None,
+                        mar=None,
+                        fatigue_suspected=False,
+                        now=observed_at,
+                    )
+                )
+                benchmark.observe_raw_signal(False, observed_at)
             else:
                 clipped_face_box = driver_detection["clipped_box"]
                 face_rect = dlib.rectangle(*clipped_face_box)
@@ -278,7 +308,8 @@ def generate_frames() -> Iterator[bytes]:
                 if ear is None or mar is None:
                     fatigue_state.face_missing()
                     data_store["is_drowsy"] = False
-                    benchmark.observe_raw_signal(False, benchmark.now())
+                    observed_at = benchmark.now()
+                    benchmark.observe_raw_signal(False, observed_at)
                 else:
                     data_store["EAR"] = ear
                     data_store["MAR"] = mar
@@ -307,6 +338,16 @@ def generate_frames() -> Iterator[bytes]:
                     fatigue_just_confirmed = fatigue.just_confirmed
                     if fatigue.just_confirmed:
                         benchmark.confirm_fatigue(observed_at)
+
+                _store_awake_gate(
+                    awake_state_gate.observe(
+                        frame=frame_eligibility,
+                        ear=ear,
+                        mar=mar,
+                        fatigue_suspected=bool(data_store["is_drowsy"]),
+                        now=observed_at,
+                    )
+                )
 
                 # sending data to frontend
                 data = dict(data_store)
